@@ -1,11 +1,15 @@
+import torch
 import torch as t
 import numpy as np
 from sklearn.linear_model import LogisticRegression
 
+from utils import dataset_sizes, collect_training_data
+
+
 def learn_truth_directions(acts_centered, labels, polarities):
     # Check if all polarities are zero (handling both int and float) -> if yes learn only t_g
     all_polarities_zero = t.allclose(polarities, t.tensor([0.0]), atol=1e-8)
-    # Make the sure the labels only have the values -1.0 and 1.0
+    # Make the sure the labels only have the values -1.0 and 1.0, replace 0 with -1
     labels_copy = labels.clone()
     labels_copy = t.where(labels_copy == 0.0, t.tensor(-1.0), labels_copy)
     
@@ -15,6 +19,7 @@ def learn_truth_directions(acts_centered, labels, polarities):
         X = t.column_stack([labels_copy, labels_copy * polarities])
 
     # Compute the analytical OLS solution
+    # find the linear coefficients that best explain activations in terms of truth and polarity
     solution = t.linalg.inv(X.T @ X) @ X.T @ acts_centered
 
     # Extract t_g and t_p
@@ -25,39 +30,114 @@ def learn_truth_directions(acts_centered, labels, polarities):
         t_g = solution[0, :]
         t_p = solution[1, :]
 
+    # weights that can be applied to the activation vector
     return t_g, t_p
 
 def learn_polarity_direction(acts, polarities):
     polarities_copy = polarities.clone()
+    # replace -1 with 0 to fit better onto a LogisticRegression
     polarities_copy[polarities_copy == -1.0] = 0.0
     LR_polarity = LogisticRegression(penalty=None, fit_intercept=True)
     LR_polarity.fit(acts.numpy(), polarities_copy.numpy())
     polarity_direc = LR_polarity.coef_
     return polarity_direc
 
+
+# Extend the original implementation to use tP, and tP * p
+class TTPD4d():
+    # Force LR to only use truth and polarity dimensions
+    def __init__(self):
+        self.t_g = None
+        self.t_p = None
+        self.polarity_direc = None
+        self.LR = None
+
+    @staticmethod
+    def from_data(acts_centered, acts, labels, polarities):
+        probe = TTPD4d()
+        # do a linear regression where X encodes truth.lie polarity, we ignore tP
+        # Learn direction for truth
+        probe.t_g, probe.t_p = learn_truth_directions(acts_centered, labels, polarities)
+        probe.t_g = probe.t_g.numpy()
+        probe.t_p = probe.t_p.numpy() if probe.t_p is not None else None
+
+        # predict if the statement is affirmative or negated
+        # gives a weight vector in activation space pointing towards affirmative vs negative phrasing
+
+        # learn direction for polarity
+        # project all activations into those 2 directions
+        probe.polarity_direc = learn_polarity_direction(acts, polarities)
+
+        # project all dimensions onto the 2d truth dimension (t_g and polarity)
+        acts_4d = probe._project_acts(acts)
+
+        probe.LR = LogisticRegression(penalty=None, fit_intercept=True)
+
+        probe.LR.fit(acts_4d, labels.numpy())
+        return probe
+
+    def pred(self, acts):
+        # same projection of all dimensions onto 3d
+        acts_4d = self._project_acts(acts)
+
+        # use prev trained LR using these 2 dimensions for predictions
+        return t.tensor(self.LR.predict(acts_4d))
+
+    def _project_acts(self, acts):
+        acts_np = acts.numpy()
+        proj_t_g = acts_np @ self.t_g  # project onto general truth direction
+        proj_p = acts_np @ self.polarity_direc.T
+
+        if self.t_p is not None:
+            proj_t_p = (acts_np @ self.t_p)
+            proj_t_p_inter = (acts_np @ self.t_p) * proj_p[:, 0]
+            acts_4d = np.concatenate((proj_t_g[:, None], proj_t_p[:, None], proj_t_p_inter[:, None], proj_p), axis=1)
+        else:
+            acts_4d = np.concatenate((proj_t_g[:, None], proj_p), axis=1)
+        return acts_4d
+
+
 class TTPD():
+    # Force LR to only use truth and polarity dimensions
     def __init__(self):
         self.t_g = None
         self.polarity_direc = None
         self.LR = None
 
+    @staticmethod
     def from_data(acts_centered, acts, labels, polarities):
         probe = TTPD()
+        # do a linear regression where X encodes truth.lie polarity, we ignore tP
+        # Learn direction for truth
         probe.t_g, _ = learn_truth_directions(acts_centered, labels, polarities)
         probe.t_g = probe.t_g.numpy()
+
+        # predict if the statement is affirmative or negated
+        # gives a weight vector in activation space pointing towards affirmative vs negative phrasing
+
+        # learn direction for polarity
+        # project all activations into those 2 directions
         probe.polarity_direc = learn_polarity_direction(acts, polarities)
+
+        # project all dimensions onto the 2d truth dimension (t_g and polarity)
         acts_2d = probe._project_acts(acts)
+
         probe.LR = LogisticRegression(penalty=None, fit_intercept=True)
+
+        # model only has to figure out truth/lie given these two features
         probe.LR.fit(acts_2d, labels.numpy())
         return probe
     
     def pred(self, acts):
+        # same projection of all dimensions onto 2d
         acts_2d = self._project_acts(acts)
+
+        # use prev trained LR using these 2 dimensions for predictions
         return t.tensor(self.LR.predict(acts_2d))
     
     def _project_acts(self, acts):
-        proj_t_g = acts.numpy() @ self.t_g
-        proj_p = acts.numpy() @ self.polarity_direc.T
+        proj_t_g = acts.numpy() @ self.t_g # project onto general truth direction
+        proj_p = acts.numpy() @ self.polarity_direc.T # project into polarity dimension (affirm vs neg)
         acts_2d = np.concatenate((proj_t_g[:, None], proj_p), axis=1)
         return acts_2d
 
@@ -155,3 +235,27 @@ class MMProbe(t.nn.Module):
 
         return probe
 
+if __name__ == '__main__':
+    model_family = 'Llama3'  # options are 'Llama3', 'Llama2', 'Gemma', 'Gemma2' or 'Mistral'
+    model_size = '8B'
+    model_type = 'chat'  # options are 'chat' or 'base'
+    layer = 12  # layer from which to extract activations
+
+    device = 'mps' if torch.mps.is_available() else 'cpu'  # gpu speeds up CCS training a fair bit but is not required
+
+    # define datasets used for training
+    train_sets = ["cities", "neg_cities", "sp_en_trans", "neg_sp_en_trans", "inventors", "neg_inventors",
+                  "animal_class",
+                  "neg_animal_class", "element_symb", "neg_element_symb", "facts", "neg_facts"]
+    # get size of each training dataset to include an equal number of statements from each topic in training data
+    train_set_sizes = dataset_sizes(train_sets)
+
+    cv_train_sets = np.array(train_sets)
+    acts_centered, acts, labels, polarities = collect_training_data(cv_train_sets, train_set_sizes, model_family,
+                                                                    model_size, model_type, layer)
+
+    probe = TTPD4d.from_data(acts_centered, acts, labels, polarities)
+
+    predictions = probe.pred(acts)
+
+    print(predictions)

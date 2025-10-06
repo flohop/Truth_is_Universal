@@ -64,9 +64,11 @@ def get_acts(statements, tokenizer, model, layers, device):
         input_ids = tokenizer.encode(statement, return_tensors="pt").to(device)
         model(input_ids)
         for layer, hook in zip(layers, hooks):
+            # only save the final token of the sequence not the whole one
             acts[layer].append(hook.out[0, -1])
     
     for layer, act in acts.items():
+        # after looping over all statements combine them into a single tensor for each layer
         acts[layer] = t.stack(act).float()
     
     # remove hooks

@@ -11,39 +11,63 @@ mkdir -p ~/miniconda3
 wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda3/miniconda.sh
 bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
 rm ~/miniconda3/miniconda.sh
-source ~/miniconda3/bin/activate
 
-# Ensure conda available
-conda init bash
-source ~/.bashrc
+# Initialize and enable conda
+source ~/miniconda3/bin/activate
+conda init bash || true
+source ~/.bashrc || true
+
+# Accept Anaconda Terms of Service automatically
+echo "✅ Accepting Anaconda Terms of Service..."
+conda config --set always_yes yes
+conda config --set report_errors false
+conda config --set auto_activate_base false
 
 # Install Git LFS
 echo "📥 Installing Git LFS..."
 git lfs install
+git config --global lfs.concurrenttransfers 10
 
-# 2. Clone Llama3 Weights
+
+# --- 2. Clone Llama3 Weights ---
 echo "🧠 Cloning Llama3 weights to /quickpod..."
 mkdir -p /quickpod/weights
-cd /quickpod/weights
+cd /quickpod/weights || exit 1
 
-read -p "Please enter your Hugging Face token or password for cloning Meta-Llama-3-8B-Instruct: " HF_TOKEN
+REPO_URL="https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct"
+TARGET_DIR="Meta-Llama-3-8B-Instruct"
 
-# Clone with authentication
-GIT_ASKPASS_SCRIPT=$(mktemp)
-cat <<EOF > "$GIT_ASKPASS_SCRIPT"
+if [ -d "$TARGET_DIR/.git" ]; then
+    echo "✅ Repository '$TARGET_DIR' already exists — skipping clone."
+else
+    read -p "Please enter your Hugging Face token or password for cloning Meta-Llama-3-8B-Instruct: " HF_TOKEN
+
+    echo "📦 Cloning repository from $REPO_URL..."
+    # Temporary script to provide token to git
+    GIT_ASKPASS_SCRIPT=$(mktemp)
+    cat <<EOF > "$GIT_ASKPASS_SCRIPT"
 #!/bin/bash
 echo "$HF_TOKEN"
 EOF
-chmod +x "$GIT_ASKPASS_SCRIPT"
+    chmod +x "$GIT_ASKPASS_SCRIPT"
 
-GIT_ASKPASS="$GIT_ASKPASS_SCRIPT" git clone https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct
+    # Clone using Hugging Face authentication
+    GIT_ASKPASS="$GIT_ASKPASS_SCRIPT" git clone "$REPO_URL" "$TARGET_DIR"
 
-rm "$GIT_ASKPASS_SCRIPT"
+    # Clean up token helper
+    rm -f "$GIT_ASKPASS_SCRIPT"
+fi
+
 
 # 3. Clone the Truth_is_Universal repo
 echo "💾 Cloning the Truth_is_Universal repository..."
 cd /workspace
-git clone https://github.com/flohop/Truth_is_Universal.git
+if [ -d "Truth_is_Universal" ]; then
+    echo "📂 Truth_is_Universal already exists, skipping clone."
+else
+    git clone https://github.com/flohop/Truth_is_Universal.git
+fi
+
 
 # 4. Update config.ini
 CONFIG_PATH="/workspace/Truth_is_Universal/config.ini"
@@ -82,11 +106,17 @@ weights_directory = ../../../../data/lbuerger/mistral_hf
 EOL
 
 # 5. Install Python dependencies
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+
 echo "🐍 Creating conda environment and installing requirements..."
-conda create -y -n truth_is_universal python=3.10
+if ! conda env list | grep -q "truth_is_universal"; then
+    conda create -y -n truth_is_universal python=3.11
+fi
 conda activate truth_is_universal
 cd /workspace/Truth_is_Universal
 pip install -r requirements.txt
+
 
 # 6. Ask if user wants to generate acts
 read -p "Do you want to generate weights for lie detection now? (y/n): " GENERATE

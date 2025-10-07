@@ -304,6 +304,59 @@ class TTPD3dTp():
         return acts_3d
 
 
+# use only tG and tP * p
+class TTPD2d():
+    # Force LR to only use truth and polarity dimensions
+    def __init__(self):
+        self.t_g = None
+        self.t_p = None
+        self.polarity_direc = None
+        self.LR = None
+
+    @staticmethod
+    def from_data(acts_centered, acts, labels, polarities):
+        probe = TTPD2d()
+        # do a linear regression where X encodes truth.lie polarity, we ignore tP
+        # Learn direction for truth
+        probe.t_g, probe.t_p = learn_truth_directions(acts_centered, labels, polarities)
+        probe.t_g = probe.t_g.numpy()
+        probe.t_p = probe.t_p.numpy() if probe.t_p is not None else None
+
+        # predict if the statement is affirmative or negated
+        # gives a weight vector in activation space pointing towards affirmative vs negative phrasing
+
+        # learn direction for polarity
+        # project all activations into those 2 directions
+        probe.polarity_direc = learn_polarity_direction(acts, polarities)
+
+        # project all dimensions onto the 2d truth dimension (t_g and polarity)
+        acts_4d = probe._project_acts(acts)
+
+        probe.LR = LogisticRegression(penalty=None, fit_intercept=True)
+
+        probe.LR.fit(acts_4d, labels.numpy())
+        return probe
+
+    def pred(self, acts):
+        # same projection of all dimensions onto 3d
+        acts_4d = self._project_acts(acts)
+
+        # use prev trained LR using these 2 dimensions for predictions
+        return t.tensor(self.LR.predict(acts_4d))
+
+    def _project_acts(self, acts):
+        acts_np = acts.numpy()
+        proj_t_g = acts_np @ self.t_g  # project onto general truth direction
+        proj_p = acts_np @ self.polarity_direc.T
+
+        if self.t_p is not None:
+            proj_t_p_inter = (acts_np @ self.t_p) * proj_p[:, 0]
+            acts_4d = np.concatenate((proj_t_g[:, None], proj_t_p_inter[:, None]), axis=1)
+        else:
+            acts_4d = np.concatenate((proj_t_g[:, None], proj_p), axis=1)
+        return acts_4d
+
+
 # Extend the original implementation to use tP, and tP * p
 class TTPD4d():
     # Force LR to only use truth and polarity dimensions
@@ -351,8 +404,7 @@ class TTPD4d():
 
         if self.t_p is not None:
             proj_t_p = (acts_np @ self.t_p)
-            proj_t_p_inter = (acts_np @ self.t_p)
-            acts_4d = np.concatenate((proj_t_g[:, None], proj_t_p[:, None], proj_t_p_inter[:, None], proj_p), axis=1)
+            acts_4d = np.concatenate((proj_t_g[:, None], proj_t_p[:, None], proj_p), axis=1)
         else:
             acts_4d = np.concatenate((proj_t_g[:, None], proj_p), axis=1)
         return acts_4d
@@ -497,7 +549,7 @@ class MMProbe(t.nn.Module):
         return probe
 
 # (title, object)
-TTPD_TYPES = [("TTPD", TTPD), ("TTPD4d", TTPD4d), ("TTPD3dTp", TTPD3dTp),
+TTPD_TYPES = [("TTPD", TTPD), ("TTPD4d", TTPD4d), ("TTPD2d", TTPD2d), ("TTPD3dTp", TTPD3dTp),
               ("TTPD3dTpInv", TTPD3dTpInv), ("TTPDTree", TTPD_DecisionTree)]
 ALL_PROBES = TTPD_TYPES + [("LRProbe", LRProbe), ("CCSProbe", CCSProbe), ("MMProbe", MMProbe)]
 
@@ -522,7 +574,7 @@ if __name__ == '__main__':
     acts_centered, acts, labels, polarities = collect_training_data(cv_train_sets, train_set_sizes, model_family,
                                                                     model_size, model_type, layer)
 
-    probe = TTPD4d.from_data(acts_centered, acts, labels, polarities)
+    probe = TTPD2d.from_data(acts_centered, acts, labels, polarities)
 
     predictions = probe.pred(acts)
 

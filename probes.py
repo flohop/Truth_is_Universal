@@ -43,6 +43,51 @@ def learn_polarity_direction(acts, polarities):
     return polarity_direc
 
 
+class TTPDDT():
+    # Force LR to only use truth and polarity dimensions
+    def __init__(self):
+        self.t_g = None
+        self.polarity_direc = None
+        self.LR = None
+
+    @staticmethod
+    def from_data(acts_centered, acts, labels, polarities):
+        probe = TTPD()
+        # do a linear regression where X encodes truth.lie polarity, we ignore tP
+        # Learn direction for truth
+        probe.t_g, _ = learn_truth_directions(acts_centered, labels, polarities)
+        probe.t_g = probe.t_g.numpy()
+
+        # predict if the statement is affirmative or negated
+        # gives a weight vector in activation space pointing towards affirmative vs negative phrasing
+
+        # learn direction for polarity
+        # project all activations into those 2 directions
+        probe.polarity_direc = learn_polarity_direction(acts, polarities)
+
+        # project all dimensions onto the 2d truth dimension (t_g and polarity)
+        acts_2d = probe._project_acts(acts)
+
+        probe.LR = LogisticRegression(penalty=None, fit_intercept=True)
+
+        # model only has to figure out truth/lie given these two features
+        probe.LR.fit(acts_2d, labels.numpy())
+        return probe
+
+    def pred(self, acts):
+        # same projection of all dimensions onto 2d
+        acts_2d = self._project_acts(acts)
+
+        # use prev trained LR using these 2 dimensions for predictions
+        return t.tensor(self.LR.predict(acts_2d))
+
+    def _project_acts(self, acts):
+        proj_t_g = acts.numpy() @ self.t_g  # project onto general truth direction
+        proj_p = acts.numpy() @ self.polarity_direc.T  # project into polarity dimension (affirm vs neg)
+        acts_2d = np.concatenate((proj_t_g[:, None], proj_p), axis=1)
+        return acts_2d
+
+
 # Extend the original implementation to use tP * p
 class TTPD3dTpInv():
     # Force LR to only use truth and polarity dimensions
@@ -94,6 +139,117 @@ class TTPD3dTpInv():
         else:
             acts_4d = np.concatenate((proj_t_g[:, None], proj_p), axis=1)
         return acts_4d
+
+
+class TTPD_DecisionTree():
+    """
+    Decision tree approach as described in Appendix B of "Truth is Universal".
+
+    From the paper:
+    "Not all statements are treated by the LLM as having either affirmative or
+    negated polarity... it might seem natural to first categorise [a statement]
+    as either affirmative or negated and then using a linear classifier based
+    on t_affirmative or t_negated."
+
+    This approach:
+    1. Predicts whether the statement is affirmative or negated
+    2. Uses the appropriate combined direction:
+       - Affirmative: t_g + t_p (points from false to true)
+       - Negated: t_g - t_p (points from false to true)
+    3. Classifies based on projection onto the selected direction
+    """
+
+    def __init__(self):
+        self.t_g = None
+        self.t_p = None
+        self.polarity_classifier = None
+        self.bias_affirmative = None
+        self.bias_negated = None
+
+    @staticmethod
+    def from_data(acts_centered, acts, labels, polarities):
+        """
+        Train the decision tree approach.
+
+        Args:
+            acts_centered: Centered activations
+            acts: Raw activations
+            labels: Truth labels (+1 for true, -1 for false)
+            polarities: Polarity labels (+1 for affirmative, -1 for negated)
+        """
+        probe = TTPD_DecisionTree()
+
+        # Learn both truth directions
+        probe.t_g, probe.t_p = learn_truth_directions(acts_centered, labels, polarities)
+        probe.t_g = probe.t_g.numpy()
+        probe.t_p = probe.t_p.numpy()
+
+        # Train polarity classifier to predict affirmative vs negated
+        polarities_copy = polarities.clone()
+        polarities_copy[polarities_copy == -1.0] = 0.0
+        probe.polarity_classifier = LogisticRegression(penalty=None, fit_intercept=True)
+        probe.polarity_classifier.fit(acts.numpy(), polarities_copy.numpy())
+
+        # Compute combined directions
+        t_affirmative = probe.t_g + probe.t_p  # For affirmative statements
+        t_negated = probe.t_g - probe.t_p  # For negated statements
+
+        # Learn separate biases for affirmative and negated statements
+        # by fitting on projections
+        mask_affirmative = (polarities == 1.0)
+        mask_negated = (polarities == -1.0)
+
+        if mask_affirmative.sum() > 0:
+            acts_aff = acts[mask_affirmative]
+            labels_aff = labels[mask_affirmative]
+            proj_aff = acts_aff.numpy() @ t_affirmative
+            lr_aff = LogisticRegression(penalty=None, fit_intercept=True)
+            lr_aff.fit(proj_aff[:, None], labels_aff.numpy())
+            probe.bias_affirmative = lr_aff.intercept_[0]
+        else:
+            probe.bias_affirmative = 0.0
+
+        if mask_negated.sum() > 0:
+            acts_neg = acts[mask_negated]
+            labels_neg = labels[mask_negated]
+            proj_neg = acts_neg.numpy() @ t_negated
+            lr_neg = LogisticRegression(penalty=None, fit_intercept=True)
+            lr_neg.fit(proj_neg[:, None], labels_neg.numpy())
+            probe.bias_negated = lr_neg.intercept_[0]
+        else:
+            probe.bias_negated = 0.0
+
+        return probe
+
+    def pred(self, acts):
+        """
+        Predict truth labels using the decision tree approach.
+
+        Steps:
+        1. Predict polarity (affirmative vs negated)
+        2. Select appropriate direction (t_g + t_p or t_g - t_p)
+        3. Project and classify
+        """
+        # Predict polarity for each statement
+        pred_polarities = self.polarity_classifier.predict(acts.numpy())
+
+        # Compute combined directions
+        t_affirmative = self.t_g + self.t_p
+        t_negated = self.t_g - self.t_p
+
+        predictions = []
+        for i, polarity in enumerate(pred_polarities):
+            act = acts[i].numpy()
+
+            if polarity == 1:  # Affirmative
+                proj = act @ t_affirmative + self.bias_affirmative
+            else:  # Negated
+                proj = act @ t_negated + self.bias_negated
+
+            # Classify based on projection (positive = true, negative = false)
+            predictions.append(1.0 if proj > 0 else 0.0)
+
+        return t.tensor(predictions)
 
 # Extend the original implementation to use tP
 class TTPD3dTp():
@@ -195,7 +351,7 @@ class TTPD4d():
 
         if self.t_p is not None:
             proj_t_p = (acts_np @ self.t_p)
-            proj_t_p_inter = (acts_np @ self.t_p) * proj_p[:, 0]
+            proj_t_p_inter = (acts_np @ self.t_p)
             acts_4d = np.concatenate((proj_t_g[:, None], proj_t_p[:, None], proj_t_p_inter[:, None], proj_p), axis=1)
         else:
             acts_4d = np.concatenate((proj_t_g[:, None], proj_p), axis=1)
@@ -339,6 +495,13 @@ class MMProbe(t.nn.Module):
         probe = MMProbe(direction, LR).to(device)
 
         return probe
+
+# (title, object)
+TTPD_TYPES = [("TTPD", TTPD), ("TTPD4d", TTPD4d), ("TTPD3dTp", TTPD3dTp),
+              ("TTPD3dTpInv", TTPD3dTpInv), ("TTPDTree", TTPD_DecisionTree)]
+ALL_PROBES = TTPD_TYPES + [("LRProbe", LRProbe), ("CCSProbe", CCSProbe), ("MMProbe", MMProbe)]
+
+
 
 if __name__ == '__main__':
     model_family = 'Llama3'  # options are 'Llama3', 'Llama2', 'Gemma', 'Gemma2' or 'Mistral'

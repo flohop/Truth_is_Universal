@@ -1,13 +1,15 @@
 import torch
 import torch as t
 import numpy as np
+import warnings
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from sklearn.exceptions import ConvergenceWarning
+from sklearn.utils._testing import ignore_warnings
 
 from utils import dataset_sizes, collect_training_data
-
 
 param_grid = [
     # liblinear: supports L1, L2
@@ -64,10 +66,10 @@ pipeline = Pipeline([
 
 # Define hyperparameter grid separately
 param_gridp_pol_dir = {
-    'lr__C': [0.01, 0.1, 1],             # typical first test: low, medium, high regularization
+    'lr__C': [0.01, 0.1],             # typical first test: low, medium, high regularization
     'lr__penalty': ['l1', 'l2'],       # test both common penalties
     'lr__solver': ['liblinear', 'saga'], # liblinear works for small datasets, saga can handle L1/L2/elasticnet
-    'lr__max_iter': [1000, 5000]              # enough iterations to converge in most cases
+    'lr__max_iter': [1000]              # enough iterations to converge in most cases
 }
 
 
@@ -98,6 +100,7 @@ def learn_truth_directions(acts_centered, labels, polarities):
     # weights that can be applied to the activation vector
     return t_g, t_p
 
+@ignore_warnings(category=ConvergenceWarning)
 def learn_polarity_direction(acts, polarities):
     polarities_copy = polarities.clone()
     polarities_copy[polarities_copy == -1.0] = 0.0
@@ -109,9 +112,9 @@ def learn_polarity_direction(acts, polarities):
             ("lr", LogisticRegression(fit_intercept=True)),
         ]),
         param_distributions=param_gridp_pol_dir,
-        n_iter=25,
+        n_iter=10,
         scoring="accuracy",
-        cv=4,
+        cv=3,
         n_jobs=-1,
         verbose=1,
         random_state=42
@@ -302,6 +305,8 @@ class TTPD4dEnh():
         self.LR = None
 
     @staticmethod
+    @ignore_warnings(category=ConvergenceWarning)
+    @ignore_warnings(category=UserWarning)
     def from_data(acts_centered, acts, labels, polarities):
         probe = TTPD4d()
         # do a linear regression where X encodes truth.lie polarity, we ignore tP
@@ -325,7 +330,7 @@ class TTPD4dEnh():
             param_distributions=param_grid_pipeline,
             n_iter=10,
             scoring="accuracy",
-            cv=4,
+            cv=3,
             n_jobs=-1,
             verbose=1
         )

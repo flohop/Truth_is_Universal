@@ -1,7 +1,6 @@
 import torch
 import torch as t
 import numpy as np
-import warnings
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.pipeline import Pipeline
@@ -73,6 +72,57 @@ param_gridp_pol_dir = {
 }
 
 
+def find_best_lr_params(X, y, param_grid=None, n_iter=10, random_state=42):
+    if param_grid is None:
+        param_grid = [
+            # liblinear solver
+            {'lr__solver': ['liblinear'],
+             'lr__penalty': ['l1', 'l2'],
+             'lr__C': [0.01, 0.1, 1, 10],
+             'lr__max_iter': [1000]},
+
+            # saga solver with l1 or l2 penalty
+            {'lr__solver': ['saga'],
+             'lr__penalty': ['l1', 'l2'],
+             'lr__C': [0.01, 0.1, 1, 10],
+             'lr__max_iter': [1000, 2000]},
+
+            # saga solver with elasticnet
+            {'lr__solver': ['saga'],
+             'lr__penalty': ['elasticnet'],
+             'lr__C': [0.01, 0.1, 1, 10],
+             'lr__l1_ratio': [0.1, 0.5, 0.9],
+             'lr__max_iter': [1000, 2000]}
+        ]
+
+    pipeline = Pipeline([
+        ('scaler', StandardScaler()),
+        ('lr', LogisticRegression(fit_intercept=True))
+    ])
+
+    grid_search = RandomizedSearchCV(
+        estimator=pipeline,
+        param_distributions=param_grid,
+        n_iter=n_iter,
+        scoring='accuracy',
+        cv=3,
+        n_jobs=-1,
+        verbose=1,
+        random_state=random_state
+    )
+
+    grid_search.fit(X, y)
+    print("Best parameters found:", grid_search.best_params_)
+
+    # Extract only the LR step parameters
+    best_params = {}
+    for key, value in grid_search.best_params_.items():
+        if key.startswith('lr__'):
+            best_params[key[4:]] = value
+
+    return best_params
+
+
 def learn_truth_directions(acts_centered, labels, polarities):
     # Check if all polarities are zero (handling both int and float) -> if yes learn only t_g
     all_polarities_zero = t.allclose(polarities, t.tensor([0.0]), atol=1e-8)
@@ -100,29 +150,58 @@ def learn_truth_directions(acts_centered, labels, polarities):
     # weights that can be applied to the activation vector
     return t_g, t_p
 
-@ignore_warnings(category=ConvergenceWarning)
+
 def learn_polarity_direction(acts, polarities):
     polarities_copy = polarities.clone()
     polarities_copy[polarities_copy == -1.0] = 0.0
+    LR_polarity = LogisticRegression(penalty=None, fit_intercept=True)
+    LR_polarity.fit(acts.numpy(), polarities_copy.numpy())
+    polarity_direc = LR_polarity.coef_
+    return polarity_direc
 
-    print("Learning polarity direction")
-    grid_search = RandomizedSearchCV(
-        estimator=Pipeline([
+
+def learn_polarity_direction_hyper(acts, polarities, best_params=None):
+    """
+    Learns the polarity direction using LogisticRegression.
+    If best_params is provided, it uses them directly instead of running grid search.
+
+    Parameters:
+        acts: tensor of activations
+        polarities: tensor of polarities (-1 or 1)
+        best_params: dict of best LogisticRegression parameters (optional)
+
+    Returns:
+        polarity_direc: numpy array of learned coefficients
+    """
+    polarities_copy = polarities.clone()
+    polarities_copy[polarities_copy == -1.0] = 0.0
+
+    # If best_params are given, skip grid search
+    if best_params is not None:
+        lr = LogisticRegression(fit_intercept=True, **best_params)
+        pipeline = Pipeline([
             ("scaler", StandardScaler()),
-            ("lr", LogisticRegression(fit_intercept=True)),
-        ]),
-        param_distributions=param_gridp_pol_dir,
-        n_iter=10,
-        scoring="accuracy",
-        cv=3,
-        n_jobs=-1,
-        verbose=1,
-        random_state=42
-    )
-    grid_search.fit(acts.numpy(), polarities_copy.numpy())
-    print("Grid fitted")
+            ("lr", lr)
+        ])
+        pipeline.fit(acts.numpy(), polarities_copy.numpy())
+        best_lr = pipeline.named_steps['lr']
+    else:
+        grid_search = RandomizedSearchCV(
+            estimator=Pipeline([
+                ("scaler", StandardScaler()),
+                ("lr", LogisticRegression(fit_intercept=True)),
+            ]),
+            param_distributions=param_gridp_pol_dir,
+            n_iter=10,
+            scoring="accuracy",
+            cv=3,
+            n_jobs=-1,
+            verbose=1,
+            random_state=42
+        )
+        grid_search.fit(acts.numpy(), polarities_copy.numpy())
+        best_lr = grid_search.best_estimator_.named_steps['lr']
 
-    best_lr = grid_search.best_estimator_.named_steps['lr']
     polarity_direc = best_lr.coef_
     return polarity_direc
 
@@ -150,7 +229,7 @@ class TTPD3dTpInv():
 
         # learn direction for polarity
         # project all activations into those 2 directions
-        probe.polarity_direc = learn_polarity_direction(acts, polarities)
+        probe.polarity_direc = learn_polarity_direction_hyper(acts, polarities)
 
         # project all dimensions onto the 2d truth dimension (t_g and polarity)
         acts_3d = probe._project_acts(acts)
@@ -202,7 +281,7 @@ class TTPD3dTp():
 
         # learn direction for polarity
         # project all activations into those 2 directions
-        probe.polarity_direc = learn_polarity_direction(acts, polarities)
+        probe.polarity_direc = learn_polarity_direction_hyper(acts, polarities)
 
         # project all dimensions onto the 2d truth dimension (t_g and polarity)
         acts_4d = probe._project_acts(acts)
@@ -259,7 +338,7 @@ class TTPD2d():
 
         # learn direction for polarity
         # project all activations into those 2 directions
-        probe.polarity_direc = learn_polarity_direction(acts, polarities)
+        probe.polarity_direc = learn_polarity_direction_hyper(acts, polarities)
 
         # project all dimensions onto the 2d truth dimension (t_g and polarity)
         acts_4d = probe._project_acts(acts)
@@ -307,8 +386,8 @@ class TTPD4dEnh():
     @staticmethod
     @ignore_warnings(category=ConvergenceWarning)
     @ignore_warnings(category=UserWarning)
-    def from_data(acts_centered, acts, labels, polarities):
-        probe = TTPD4d()
+    def from_data(acts_centered, acts, labels, polarities, polarity_params=None, ttpd_params=None):
+        probe = TTPD4dEnh()
         # do a linear regression where X encodes truth.lie polarity, we ignore tP
         # Learn direction for truth
         probe.t_g, probe.t_p = learn_truth_directions(acts_centered, labels, polarities)
@@ -316,28 +395,36 @@ class TTPD4dEnh():
         probe.t_p = probe.t_p.numpy() if probe.t_p is not None else None
 
         # project all activations into those 2 directions
-        probe.polarity_direc = learn_polarity_direction(acts, polarities)
+        probe.polarity_direc = learn_polarity_direction_hyper(acts, polarities, polarity_params)
 
         # project all dimensions onto the 2d truth dimension (t_g and polarity)
         acts_4d = probe._project_acts(acts)
 
-        # grid search
-        grid_search = RandomizedSearchCV(
-            estimator=Pipeline([
+        if ttpd_params is not None:
+            lr = LogisticRegression(fit_intercept=True, **ttpd_params)
+            pipeline = Pipeline([
                 ("scaler", StandardScaler()),
-                ("lr", LogisticRegression(fit_intercept=True)),
-            ]),
-            param_distributions=param_grid_pipeline,
-            n_iter=10,
-            scoring="accuracy",
-            cv=3,
-            n_jobs=-1,
-            verbose=1
-        )
+                ("lr", lr),
+            ])
+            pipeline.fit(acts_4d, labels.numpy())
+            probe.LR = pipeline.named_steps["lr"]
+        else:
+            # grid search
+            grid_search = RandomizedSearchCV(
+                estimator=Pipeline([
+                    ("scaler", StandardScaler()),
+                    ("lr", LogisticRegression(fit_intercept=True)),
+                ]),
+                param_distributions=param_grid_pipeline,
+                n_iter=10,
+                scoring="accuracy",
+                cv=3,
+                n_jobs=-1,
+                verbose=1
+            )
 
-        grid_search.fit(acts_4d, labels.numpy())
-        print("Grid search fitted for TTPD")
-        probe.LR = grid_search.best_estimator_
+            grid_search.fit(acts_4d, labels.numpy())
+            probe.LR = grid_search.best_estimator_.named_steps["lr"]
         return probe
 
     def pred(self, acts):
@@ -383,7 +470,7 @@ class TTPD4d():
 
         # learn direction for polarity
         # project all activations into those 2 directions
-        probe.polarity_direc = learn_polarity_direction(acts, polarities)
+        probe.polarity_direc = learn_polarity_direction_hyper(acts, polarities)
 
         # project all dimensions onto the 2d truth dimension (t_g and polarity)
         acts_4d = probe._project_acts(acts)

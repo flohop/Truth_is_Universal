@@ -36,23 +36,23 @@ param_grid = [
 param_grid_pipeline = [
     {'lr__solver': ['liblinear'],
      'lr__penalty': ['l1', 'l2'],
-     'lr__C': [0.1, 1, 10, 100],
-     'lr__max_iter': [1000]},  # increase max_iter
+     'lr__C': [0.001, 0.1, 1, 10],
+     'lr__max_iter': [1000, 2000]},  # increase max_iter
 
     {'lr__solver': ['lbfgs'],
      'lr__penalty': ['l2'],
-     'lr__C': [0.1, 1, 10, 100],
-     'lr__max_iter': [1000]},
+     'lr__C': [0.001, 0.1, 1, 10],
+     'lr__max_iter': [1000, 2000]},
 
     {'lr__solver': ['saga'],
      'lr__penalty': ['l1', 'l2'],
-     'lr__C': [0.1, 1, 10, 100],
-     'lr__max_iter': [1000]},
+     'lr__C': [0.001, 0.1, 1, 10],
+     'lr__max_iter': [1000, 2000]},
 
     {'lr__solver': ['saga'],
      'lr__penalty': ['elasticnet'],
      'lr__l1_ratio': [0.1, 0.5, 0.9],
-     'lr__C': [0.01, 0.1, 1, 10, 100],
+     'lr__C': [0.001, 0.01, 0.1, 1, 10],
      'lr__max_iter': [2000]}  # elasticnet often needs more iterations
 ]
 
@@ -107,7 +107,7 @@ def find_best_lr_params(X, y, param_grid=None, n_iter=10, random_state=42):
         scoring='accuracy',
         cv=3,
         n_jobs=-1,
-        verbose=1,
+        verbose=0,
         random_state=random_state
     )
 
@@ -178,7 +178,7 @@ def learn_polarity_direction_hyper(acts, polarities, best_params=None):
     if best_params is not None:
         lr = LogisticRegression(fit_intercept=True, **best_params)
         pipeline = Pipeline([
-            ("scaler", StandardScaler()),
+            # ("scaler", StandardScaler()),
             ("lr", lr)
         ])
         pipeline.fit(acts.numpy(), polarities_copy.numpy())
@@ -186,7 +186,7 @@ def learn_polarity_direction_hyper(acts, polarities, best_params=None):
     else:
         grid_search = RandomizedSearchCV(
             estimator=Pipeline([
-                ("scaler", StandardScaler()),
+                # ("scaler", StandardScaler()),
                 ("lr", LogisticRegression(fit_intercept=True)),
             ]),
             param_distributions=param_gridp_pol_dir,
@@ -194,7 +194,7 @@ def learn_polarity_direction_hyper(acts, polarities, best_params=None):
             scoring="accuracy",
             cv=3,
             n_jobs=-1,
-            verbose=1,
+            verbose=0,
             random_state=42
         )
         grid_search.fit(acts.numpy(), polarities_copy.numpy())
@@ -397,6 +397,7 @@ class TTPD4dEnh():
         if TTPD4dEnh.polarity_params is None:
             print("Set polarity parameters")
             TTPD4dEnh.polarity_params = find_best_lr_params(acts, polarities)
+            print("Params (Polarity): ", TTPD4dEnh.polarity_params)
 
         # project all activations into those 2 directions
         probe.polarity_direc = learn_polarity_direction_hyper(acts, polarities)
@@ -407,10 +408,11 @@ class TTPD4dEnh():
         if TTPD4dEnh.ttpd_params is None:
             print("Set ttpd parameters")
             TTPD4dEnh.ttpd_params = find_best_lr_params(acts_4d, labels)
+            print("Params (TTPD): ", TTPD4dEnh.ttpd_params)
 
         lr = LogisticRegression(fit_intercept=True, **TTPD4dEnh.ttpd_params)
         pipeline = Pipeline([
-            ("scaler", StandardScaler()),
+            # ("scaler", StandardScaler()),
             ("lr", lr),
         ])
         pipeline.fit(acts_4d, labels.numpy())
@@ -631,7 +633,7 @@ class MMProbe(t.nn.Module):
 
 # (title, object)
 TTPD_TYPES = [
-        ("TTPD", TTPD),
+        # ("TTPD", TTPD),
         #("TTPD4d", TTPD4d),
         ("TTPD4dHyper", TTPD4dEnh),
             #  ("TTPD2d", TTPD2d), ("TTPD3dTp", TTPD3dTp)

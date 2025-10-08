@@ -117,6 +117,9 @@ conda activate truth_is_universal
 cd /workspace/Truth_is_Universal
 pip install -r requirements.txt
 
+# chmod of start
+chmod +x ./start.sh ./stop.sh
+
 
 # 6. Ask if user wants to generate acts
 read -p "Do you want to generate weights for lie detection now? (y/n): " GENERATE

@@ -8,6 +8,30 @@ from sklearn.preprocessing import StandardScaler
 from utils import dataset_sizes, collect_training_data
 
 
+param_grid = [
+    # liblinear: supports L1, L2
+    {'solver': ['liblinear'],
+     'penalty': ['l1', 'l2'],
+     'C': [0.1, 1, 10, 100]},
+
+    # lbfgs: only supports L2
+    {'solver': ['lbfgs'],
+     'penalty': ['l2'],
+     'C': [0.1, 1, 10, 100]},
+
+    # saga: supports L1, L2, elasticnet
+    {'solver': ['saga'],
+     'penalty': ['l1', 'l2'],
+     'C': [0.1, 1, 10, 100]},
+
+    # saga + elasticnet with l1_ratio
+    {'solver': ['saga'],
+     'penalty': ['elasticnet'],
+     'l1_ratio': [0.1, 0.5, 0.9],
+     'C': [0.01, 0.1, 1, 10, 100]}
+]
+
+
 def learn_truth_directions(acts_centered, labels, polarities):
     # Check if all polarities are zero (handling both int and float) -> if yes learn only t_g
     all_polarities_zero = t.allclose(polarities, t.tensor([0.0]), atol=1e-8)
@@ -281,9 +305,13 @@ class TTPD3dTp():
         # project all dimensions onto the 2d truth dimension (t_g and polarity)
         acts_4d = probe._project_acts(acts)
 
-        probe.LR = LogisticRegression(penalty=None, fit_intercept=True)
+        LR = LogisticRegression(max_iter=5000, fit_intercept=True)
 
-        probe.LR.fit(acts_4d, labels.numpy())
+        grid = GridSearchCV(LR, param_grid, cv=5, n_jobs=-1)
+        grid.fit(acts_4d, labels.numpy())
+
+        # probe.LR.fit(actsS, labels.numpy())
+        probe.LR = grid.best_estimator_
         return probe
 
     def pred(self, acts):
@@ -334,7 +362,14 @@ class TTPD2d():
         # project all dimensions onto the 2d truth dimension (t_g and polarity)
         acts_4d = probe._project_acts(acts)
 
-        probe.LR = LogisticRegression(penalty=None, fit_intercept=True)
+        LR = LogisticRegression(max_iter=5000, fit_intercept=True)
+
+        grid = GridSearchCV(LR, param_grid, cv=5, n_jobs=-1)
+        grid.fit(acts_4d, labels.numpy())
+
+        # probe.LR.fit(actsS, labels.numpy())
+        probe.LR = grid.best_estimator_
+        return probe
 
         probe.LR.fit(acts_4d, labels.numpy())
         return probe
@@ -412,31 +447,76 @@ class TTPD4d():
             acts_4d = np.concatenate((proj_t_g[:, None], proj_p), axis=1)
         return acts_4d
 
-param_grid = [
-    # liblinear: supports L1, L2
-    {'solver': ['liblinear'],
-     'penalty': ['l1', 'l2'],
-     'C': [0.01, 0.1, 1, 10, 100]},
 
-    # lbfgs: only supports L2
-    {'solver': ['lbfgs'],
-     'penalty': ['l2'],
-     'C': [0.01, 0.1, 1, 10, 100]},
+class TTPD4dEnh3():
+    # Force LR to only use truth and polarity dimensions
+    def __init__(self):
+        self.t_g = None
+        self.t_p = None
+        self.polarity_direc = None
+        self.LR = None
 
-    # saga: supports L1, L2, elasticnet
-    {'solver': ['saga'],
-     'penalty': ['l1', 'l2'],
-     'C': [0.01, 0.1, 1, 10, 100]},
+    @staticmethod
+    def from_data(acts_centered, acts, labels, polarities):
+        probe = TTPD4dEnh3()
+        # do a linear regression where X encodes truth.lie polarity, we ignore tP
+        # Learn direction for truth
+        probe.t_g, probe.t_p = learn_truth_directions(acts_centered, labels, polarities)
+        probe.t_g = probe.t_g.numpy()
+        probe.t_p = probe.t_p.numpy() if probe.t_p is not None else None
 
-    # saga + elasticnet with l1_ratio
-    {'solver': ['saga'],
-     'penalty': ['elasticnet'],
-     'l1_ratio': [0.1, 0.5, 0.9],
-     'C': [0.01, 0.1, 1, 10, 100]}
-]
+        # predict if the statement is affirmative or negated
+        # gives a weight vector in activation space pointing towards affirmative vs negative phrasing
 
-# Extend the original implementation to use tP, and tP * p
-# Features: Scaler, Dropout, grid,
+        # learn direction for polarity
+        # project all activations into those 2 directions
+        probe.polarity_direc = learn_polarity_direction(acts, polarities)
+
+        # project all dimensions onto the 2d truth dimension (t_g and polarity)
+        acts_4d = probe._project_acts(acts)
+
+        LR = LogisticRegression(max_iter=5000, fit_intercept=True)
+
+        grid = GridSearchCV(LR, param_grid, cv=5, n_jobs=-1)
+        grid.fit(acts_4d, labels.numpy())
+
+        # probe.LR.fit(actsS, labels.numpy())
+        probe.LR = grid.best_estimator_
+        return probe
+
+    def pred(self, acts):
+        # same projection of all dimensions onto 3d
+        acts_4d = self._project_acts(acts)
+        return t.tensor(self.LR.predict(acts_4d))
+
+    def _project_acts(self, acts):
+        acts_np = acts.numpy()
+
+        proj_t_g = acts_np @ self.t_g  # project onto general truth direction
+        proj_p = acts_np @ self.polarity_direc.T
+
+        proj_p = proj_p.reshape(-1)
+
+        if self.t_p is not None:
+            proj_t_p = acts_np @ self.t_p
+            proj_t_p = proj_t_p.reshape(-1)
+
+            polarity_sign = np.sign(proj_p)
+
+            polarity_sign[polarity_sign == 0] = 1.0
+
+            aligned_tp = polarity_sign * proj_t_p
+
+            inter = proj_t_g * aligned_tp
+
+            acts_4d = np.stack([proj_t_g, aligned_tp, inter], axis=1)
+        else:
+            # TODO
+            print("Should not reach here")
+            acts_4d = np.concatenate((proj_t_g[:, None], proj_p), axis=1)
+        return acts_4d
+
+
 class TTPD4dEnh2():
     # Force LR to only use truth and polarity dimensions
     def __init__(self):
@@ -444,7 +524,6 @@ class TTPD4dEnh2():
         self.t_p = None
         self.polarity_direc = None
         self.LR = None
-        self.scaler = None
 
     @staticmethod
     def from_data(acts_centered, acts, labels, polarities):
@@ -463,17 +542,12 @@ class TTPD4dEnh2():
         probe.polarity_direc = learn_polarity_direction(acts, polarities)
 
         # project all dimensions onto the 2d truth dimension (t_g and polarity)
-        acts_4d = probe._project_acts(acts, dropout_prob=0.1, training=True)
-
-        # Scale features
-        scaler = StandardScaler()
-        actsS = scaler.fit_transform(acts_4d)
-        probe.scaler = scaler
+        acts_4d = probe._project_acts(acts)
 
         LR = LogisticRegression(max_iter=5000, fit_intercept=True)
 
         grid = GridSearchCV(LR, param_grid, cv=5, n_jobs=-1)
-        grid.fit(actsS, labels.numpy())
+        grid.fit(acts_4d, labels.numpy())
 
         # probe.LR.fit(actsS, labels.numpy())
         probe.LR = grid.best_estimator_
@@ -482,27 +556,15 @@ class TTPD4dEnh2():
     def pred(self, acts):
         # same projection of all dimensions onto 3d
         acts_4d = self._project_acts(acts)
-
-        if self.scaler:
-            acts_4d = self.scaler.transform(acts_4d)
         return t.tensor(self.LR.predict(acts_4d))
 
-    def _project_acts(self, acts, dropout_prob=0.1, training=False):
+    def _project_acts(self, acts):
         acts_np = acts.numpy()
 
         proj_t_g = acts_np @ self.t_g  # project onto general truth direction
         proj_p = acts_np @ self.polarity_direc.T
 
         proj_p = proj_p.reshape(-1)
-
-        # random dropout
-        if training and  dropout_prob > 0:
-            mask_tg = (np.random.rand(*proj_t_g.shape) > dropout_prob).astype(float)
-            mask_p = (np.random.rand(*proj_p.shape) > dropout_prob).astype(float)
-
-            proj_t_g *= mask_tg
-            proj_p *= mask_p
-
 
         if self.t_p is not None:
             proj_t_p = acts_np @ self.t_p
@@ -739,9 +801,13 @@ class MMProbe(t.nn.Module):
         return probe
 
 # (title, object)
-TTPD_TYPES = [("TTPD", TTPD), ("TTPD4d", TTPD4d), ("TTPD4d+", TTPD4dEnh), ("TTPD4d++", TTPD4dEnh2), ("TTPD2d", TTPD2d), ("TTPD3dTp", TTPD3dTp)
+TTPD_TYPES = [("TTPD", TTPD), ("TTPD4d", TTPD4d), ("TTPD4d1", TTPD4dEnh), ("TTPD4d2", TTPD4dEnh2), ("TTPD4d3", TTPD4dEnh3),
+              ("TTPD2d", TTPD2d), ("TTPD3dTp", TTPD3dTp)
             ]
-ALL_PROBES = TTPD_TYPES + [("LRProbe", LRProbe), ("CCSProbe", CCSProbe), ("MMProbe", MMProbe)]
+
+# To speed up testing, for full report use all probes
+# ALL_PROBES = TTPD_TYPES + [("LRProbe", LRProbe), ("CCSProbe", CCSProbe), ("MMProbe", MMProbe)]
+ALL_PROBES = TTPD_TYPES
 
 
 
@@ -764,8 +830,10 @@ if __name__ == '__main__':
     acts_centered, acts, labels, polarities = collect_training_data(cv_train_sets, train_set_sizes, model_family,
                                                                     model_size, model_type, layer)
 
-    probe = TTPD4dEnh2.from_data(acts_centered, acts, labels, polarities)
+    # Make sure no code errors
+    for (name, ttpd) in TTPD_TYPES:
+        print(name)
+        probe = ttpd.from_data(acts_centered, acts, labels, polarities)
 
-    predictions = probe.pred(acts)
-
-    print(predictions)
+        predictions = probe.pred(acts)
+        print(predictions)

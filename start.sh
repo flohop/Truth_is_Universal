@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -e
 
-mv /quickpod/Truth_is_Universal /workspace/Truth_is_Universal/
+if [ -d "/quickpod/Truth_is_Universal" ]; then
+  mv /quickpod/Truth_is_Universal /workspace/Truth_is_Universal/
+fi
 cd ./Truth_is_Universal
 git stash
 git pull

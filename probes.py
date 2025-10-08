@@ -337,9 +337,9 @@ class TTPD2d():
         # predict if the statement is affirmative or negated
         # gives a weight vector in activation space pointing towards affirmative vs negative phrasing
 
-        if TTPD4dEnh.polarity_params is None:
+        if TTPD2d.polarity_params is None:
             print("Set polarity parameters")
-            TTPD4dEnh.polarity_params = find_best_lr_params(acts, polarities)
+            TTPD2d.polarity_params = find_best_lr_params(acts, polarities)
             print("Params (Polarity): ", TTPD2d.polarity_params)
 
             # project all activations into those 2 directions
@@ -349,9 +349,9 @@ class TTPD2d():
         # project all dimensions onto the 2d truth dimension (t_g and polarity)
         acts_4d = probe._project_acts(acts)
 
-        if TTPD4dEnh.ttpd_params is None:
+        if TTPD2d.ttpd_params is None:
             print("Set ttpd parameters")
-            TTPD4dEnh.ttpd_params = find_best_lr_params(acts_4d, labels)
+            TTPD2d.ttpd_params = find_best_lr_params(acts_4d, labels)
             print("Params (TTPD): ", TTPD2d.ttpd_params)
 
         LR = LogisticRegression(fit_intercept=True, **TTPD2d.ttpd_params)

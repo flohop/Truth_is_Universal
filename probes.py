@@ -2,7 +2,7 @@ import torch
 import torch as t
 import numpy as np
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -64,10 +64,10 @@ pipeline = Pipeline([
 
 # Define hyperparameter grid separately
 param_gridp_pol_dir = {
-    'lr__C': [0.1, 1, 10],             # typical first test: low, medium, high regularization
+    'lr__C': [0.01, 0.1, 1],             # typical first test: low, medium, high regularization
     'lr__penalty': ['l1', 'l2'],       # test both common penalties
     'lr__solver': ['liblinear', 'saga'], # liblinear works for small datasets, saga can handle L1/L2/elasticnet
-    'lr__max_iter': [1000]              # enough iterations to converge in most cases
+    'lr__max_iter': [1000, 5000]              # enough iterations to converge in most cases
 }
 
 
@@ -103,16 +103,18 @@ def learn_polarity_direction(acts, polarities):
     polarities_copy[polarities_copy == -1.0] = 0.0
 
     print("Learning polarity direction")
-    grid_search = GridSearchCV(
+    grid_search = RandomizedSearchCV(
         estimator=Pipeline([
             ("scaler", StandardScaler()),
             ("lr", LogisticRegression(fit_intercept=True)),
         ]),
-        param_grid=param_gridp_pol_dir,
+        param_distributions=param_gridp_pol_dir,
+        n_iter=25,
         scoring="accuracy",
-        cv=5,
+        cv=4,
         n_jobs=-1,
         verbose=1,
+        random_state=42
     )
     grid_search.fit(acts.numpy(), polarities_copy.numpy())
     print("Grid fitted")
@@ -315,14 +317,15 @@ class TTPD4dEnh():
         acts_4d = probe._project_acts(acts)
 
         # grid search
-        grid_search = GridSearchCV(
+        grid_search = RandomizedSearchCV(
             estimator=Pipeline([
                 ("scaler", StandardScaler()),
                 ("lr", LogisticRegression(fit_intercept=True)),
             ]),
-            param_grid=param_grid_pipeline,
+            param_distributions=param_grid_pipeline,
+            n_iter=10,
             scoring="accuracy",
-            cv=5,
+            cv=4,
             n_jobs=-1,
             verbose=1
         )
@@ -545,7 +548,7 @@ class MMProbe(t.nn.Module):
 
 # (title, object)
 TTPD_TYPES = [
-        #("TTPD", TTPD),
+        # ("TTPD", TTPD),
         #("TTPD4d", TTPD4d),
         ("TTPD4dHyper", TTPD4dEnh),
             #  ("TTPD2d", TTPD2d), ("TTPD3dTp", TTPD3dTp)

@@ -412,13 +412,31 @@ class TTPD4d():
             acts_4d = np.concatenate((proj_t_g[:, None], proj_p), axis=1)
         return acts_4d
 
-param_grid = {
-    'C': [0.01, 0.1, 0.5, 1, 10, 100],
-    'penalty': ['l1', 'l2', 'elasticnet'],
-    'solver': ['liblinear', 'lbfgs', 'saga']
-}
+param_grid = [
+    # liblinear: supports L1, L2
+    {'solver': ['liblinear'],
+     'penalty': ['l1', 'l2'],
+     'C': [0.01, 0.1, 1, 10, 100]},
+
+    # lbfgs: only supports L2
+    {'solver': ['lbfgs'],
+     'penalty': ['l2'],
+     'C': [0.01, 0.1, 1, 10, 100]},
+
+    # saga: supports L1, L2, elasticnet
+    {'solver': ['saga'],
+     'penalty': ['l1', 'l2'],
+     'C': [0.01, 0.1, 1, 10, 100]},
+
+    # saga + elasticnet with l1_ratio
+    {'solver': ['saga'],
+     'penalty': ['elasticnet'],
+     'l1_ratio': [0.1, 0.5, 0.9],
+     'C': [0.01, 0.1, 1, 10, 100]}
+]
 
 # Extend the original implementation to use tP, and tP * p
+# Features: Scaler, Dropout, grid,
 class TTPD4dEnh2():
     # Force LR to only use truth and polarity dimensions
     def __init__(self):
@@ -445,16 +463,16 @@ class TTPD4dEnh2():
         probe.polarity_direc = learn_polarity_direction(acts, polarities)
 
         # project all dimensions onto the 2d truth dimension (t_g and polarity)
-        acts_4d = probe._project_acts(acts)
+        acts_4d = probe._project_acts(acts, dropout_prob=0.1, training=True)
 
         # Scale features
         scaler = StandardScaler()
         actsS = scaler.fit_transform(acts_4d)
         probe.scaler = scaler
 
-        LR = LogisticRegression(penalty="l2", C=1.0, solver="lbfgs", fit_intercept=True)
+        LR = LogisticRegression(max_iter=5000, fit_intercept=True)
 
-        grid = GridSearchCV(LR, param_grid, cv=5)
+        grid = GridSearchCV(LR, param_grid, cv=5, n_jobs=-1)
         grid.fit(actsS, labels.numpy())
 
         # probe.LR.fit(actsS, labels.numpy())
@@ -469,7 +487,7 @@ class TTPD4dEnh2():
             acts_4d = self.scaler.transform(acts_4d)
         return t.tensor(self.LR.predict(acts_4d))
 
-    def _project_acts(self, acts, dropout_prob=0.1):
+    def _project_acts(self, acts, dropout_prob=0.1, training=False):
         acts_np = acts.numpy()
 
         proj_t_g = acts_np @ self.t_g  # project onto general truth direction
@@ -477,10 +495,14 @@ class TTPD4dEnh2():
 
         proj_p = proj_p.reshape(-1)
 
-        if np.random.rand() < dropout_prob:
-            proj_t_g *= 0
-        if np.random.rand() < dropout_prob:
-            proj_p *= 0
+        # random dropout
+        if training and  dropout_prob > 0:
+            mask_tg = (np.random.rand(*proj_t_g.shape) > dropout_prob).astype(float)
+            mask_p = (np.random.rand(*proj_p.shape) > dropout_prob).astype(float)
+
+            proj_t_g *= mask_tg
+            proj_p *= mask_p
+
 
         if self.t_p is not None:
             proj_t_p = acts_np @ self.t_p

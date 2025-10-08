@@ -553,7 +553,7 @@ class MMProbe(t.nn.Module):
 
 # (title, object)
 TTPD_TYPES = [
-        # ("TTPD", TTPD),
+        ("TTPD", TTPD),
         #("TTPD4d", TTPD4d),
         ("TTPD4dHyper", TTPD4dEnh),
             #  ("TTPD2d", TTPD2d), ("TTPD3dTp", TTPD3dTp)

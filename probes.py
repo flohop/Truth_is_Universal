@@ -72,20 +72,20 @@ param_gridp_pol_dir = {
 }
 
 
-def find_best_lr_params(X, y, param_grid=None, n_iter=10, random_state=42):
+def find_best_lr_params(X, y, param_grid=None, n_iter=15, random_state=42):
     if param_grid is None:
         param_grid = [
             # liblinear solver
             {'lr__solver': ['liblinear'],
              'lr__penalty': ['l1', 'l2'],
-             'lr__C': [0.01, 0.1, 1, 10],
-             'lr__max_iter': [1000, 2000]},
+             'lr__C': [0.01, 0.1, 0.5, 1, 10],
+             'lr__max_iter': [1000, 1500]},
 
             # saga solver with l1 or l2 penalty
             {'lr__solver': ['saga'],
              'lr__penalty': ['l1', 'l2'],
-             'lr__C': [0.01, 0.1, 1, 10],
-             'lr__max_iter': [1000, 2000]},
+             'lr__C': [0.1, 1],
+             'lr__max_iter': [1000, 2000, 3000]},
 
             # saga solver with elasticnet
             {'lr__solver': ['saga'],
@@ -105,7 +105,7 @@ def find_best_lr_params(X, y, param_grid=None, n_iter=10, random_state=42):
         param_distributions=param_grid,
         n_iter=n_iter,
         scoring='accuracy',
-        cv=3,
+        cv=5,
         n_jobs=-1,
         verbose=0,
         random_state=random_state
@@ -315,6 +315,9 @@ class TTPD3dTp():
 
 # use only tG and tP * p
 class TTPD2d():
+    polarity_params = None
+    ttpd_params = None
+
     # Force LR to only use truth and polarity dimensions
     def __init__(self):
         self.t_g = None
@@ -334,19 +337,28 @@ class TTPD2d():
         # predict if the statement is affirmative or negated
         # gives a weight vector in activation space pointing towards affirmative vs negative phrasing
 
-        # learn direction for polarity
-        # project all activations into those 2 directions
-        probe.polarity_direc = learn_polarity_direction_hyper(acts, polarities)
+        if TTPD4dEnh.polarity_params is None:
+            print("Set polarity parameters")
+            TTPD4dEnh.polarity_params = find_best_lr_params(acts, polarities)
+            print("Params (Polarity): ", TTPD2d.polarity_params)
+
+            # project all activations into those 2 directions
+        probe.polarity_direc = learn_polarity_direction_hyper(acts, polarities, TTPD2d.polarity_params)
+
 
         # project all dimensions onto the 2d truth dimension (t_g and polarity)
         acts_4d = probe._project_acts(acts)
 
-        LR = LogisticRegression(max_iter=5000, fit_intercept=True)
+        if TTPD4dEnh.ttpd_params is None:
+            print("Set ttpd parameters")
+            TTPD4dEnh.ttpd_params = find_best_lr_params(acts_4d, labels)
+            print("Params (TTPD): ", TTPD2d.ttpd_params)
+
+        LR = LogisticRegression(fit_intercept=True, **TTPD2d.ttpd_params)
 
         grid = GridSearchCV(LR, param_grid, cv=5, n_jobs=-1)
         grid.fit(acts_4d, labels.numpy())
 
-        # probe.LR.fit(actsS, labels.numpy())
         probe.LR = grid.best_estimator_
         return probe
 
@@ -400,7 +412,7 @@ class TTPD4dEnh():
             print("Params (Polarity): ", TTPD4dEnh.polarity_params)
 
         # project all activations into those 2 directions
-        probe.polarity_direc = learn_polarity_direction_hyper(acts, polarities)
+        probe.polarity_direc = learn_polarity_direction_hyper(acts, polarities, TTPD4dEnh.polarity_params)
 
         # project all dimensions onto the 2d truth dimension (t_g and polarity)
         acts_4d = probe._project_acts(acts)
@@ -412,7 +424,7 @@ class TTPD4dEnh():
 
         lr = LogisticRegression(fit_intercept=True, **TTPD4dEnh.ttpd_params)
         pipeline = Pipeline([
-            # ("scaler", StandardScaler()),
+            ("scaler", StandardScaler()),
             ("lr", lr),
         ])
         pipeline.fit(acts_4d, labels.numpy())

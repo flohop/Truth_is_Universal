@@ -648,7 +648,8 @@ TTPD_TYPES = [
         # ("TTPD", TTPD),
         #("TTPD4d", TTPD4d),
         ("TTPD4dHyper", TTPD4dEnh),
-            #  ("TTPD2d", TTPD2d), ("TTPD3dTp", TTPD3dTp)
+        ("TTPD2d", TTPD2d),
+    #  ("TTPD3dTp", TTPD3dTp)
             ]
 
 # To speed up testing, for full report use all probes

@@ -79,7 +79,7 @@ def find_best_lr_params(X, y, param_grid=None, n_iter=10, random_state=42):
             {'lr__solver': ['liblinear'],
              'lr__penalty': ['l1', 'l2'],
              'lr__C': [0.01, 0.1, 1, 10],
-             'lr__max_iter': [1000]},
+             'lr__max_iter': [1000, 2000]},
 
             # saga solver with l1 or l2 penalty
             {'lr__solver': ['saga'],
@@ -112,8 +112,6 @@ def find_best_lr_params(X, y, param_grid=None, n_iter=10, random_state=42):
     )
 
     grid_search.fit(X, y)
-    print("Best parameters found:", grid_search.best_params_)
-
     # Extract only the LR step parameters
     best_params = {}
     for key, value in grid_search.best_params_.items():
@@ -376,6 +374,8 @@ class TTPD2d():
 
 
 class TTPD4dEnh():
+    polarity_params = None
+    ttpd_params = None
     # Force LR to only use truth and polarity dimensions
     def __init__(self):
         self.t_g = None
@@ -386,7 +386,7 @@ class TTPD4dEnh():
     @staticmethod
     @ignore_warnings(category=ConvergenceWarning)
     @ignore_warnings(category=UserWarning)
-    def from_data(acts_centered, acts, labels, polarities, polarity_params=None, ttpd_params=None):
+    def from_data(acts_centered, acts, labels, polarities):
         probe = TTPD4dEnh()
         # do a linear regression where X encodes truth.lie polarity, we ignore tP
         # Learn direction for truth
@@ -394,37 +394,28 @@ class TTPD4dEnh():
         probe.t_g = probe.t_g.numpy()
         probe.t_p = probe.t_p.numpy() if probe.t_p is not None else None
 
+        if TTPD4dEnh.polarity_params is None:
+            print("Set polarity parameters")
+            TTPD4dEnh.polarity_params = find_best_lr_params(acts, polarities)
+
         # project all activations into those 2 directions
-        probe.polarity_direc = learn_polarity_direction_hyper(acts, polarities, polarity_params)
+        probe.polarity_direc = learn_polarity_direction_hyper(acts, polarities)
 
         # project all dimensions onto the 2d truth dimension (t_g and polarity)
         acts_4d = probe._project_acts(acts)
 
-        if ttpd_params is not None:
-            lr = LogisticRegression(fit_intercept=True, **ttpd_params)
-            pipeline = Pipeline([
-                ("scaler", StandardScaler()),
-                ("lr", lr),
-            ])
-            pipeline.fit(acts_4d, labels.numpy())
-            probe.LR = pipeline.named_steps["lr"]
-        else:
-            # grid search
-            grid_search = RandomizedSearchCV(
-                estimator=Pipeline([
-                    ("scaler", StandardScaler()),
-                    ("lr", LogisticRegression(fit_intercept=True)),
-                ]),
-                param_distributions=param_grid_pipeline,
-                n_iter=10,
-                scoring="accuracy",
-                cv=3,
-                n_jobs=-1,
-                verbose=1
-            )
+        if TTPD4dEnh.ttpd_params is None:
+            print("Set ttpd parameters")
+            TTPD4dEnh.ttpd_params = find_best_lr_params(acts_4d, labels)
 
-            grid_search.fit(acts_4d, labels.numpy())
-            probe.LR = grid_search.best_estimator_.named_steps["lr"]
+        lr = LogisticRegression(fit_intercept=True, **TTPD4dEnh.ttpd_params)
+        pipeline = Pipeline([
+            ("scaler", StandardScaler()),
+            ("lr", lr),
+        ])
+        pipeline.fit(acts_4d, labels.numpy())
+        probe.LR = pipeline.named_steps["lr"]
+
         return probe
 
     def pred(self, acts):

@@ -100,9 +100,9 @@ def find_best_lr_params(X, y, param_grid=None, n_iter=15, random_state=42, scori
 
             {'lr__solver': ['saga'],
              'lr__penalty': ['elasticnet'],
-             'lr__C': [0.01, 0.1, 1, 10],
-             'lr__l1_ratio': [0.1, 0.5, 0.9],
-             'lr__max_iter': [2000, 3000]}
+             'lr__C': [0.1, 0.5, 1, 10],
+             'lr__l1_ratio': [0.1, 0.3, 0.5],
+             'lr__max_iter': [5000, 7000]}
         ]
 
     pipeline = Pipeline([
@@ -487,28 +487,6 @@ class TTPD4dEnh():
             print("Found: ", polarity_params)
 
         probe.polarity_direc = learn_polarity_direction_hyper(acts, polarities, best_params=polarity_params, scoring=scoring)
-        # ensure 1d numpy
-        probe.polarity_direc = np.ravel(probe.polarity_direc)
-
-        # ---- STEP 1: Orthogonalize tP and P against tG ----
-        def orthogonalize(v, base):
-            return v - np.dot(v, base) * base
-
-        probe.t_g = np.asarray(probe.t_g, dtype=np.float64)
-        probe.t_p = np.asarray(probe.t_p, dtype=np.float64)
-        probe.polarity_direc = np.asarray(probe.polarity_direc, dtype=np.float64)
-
-        probe.t_p = orthogonalize(probe.t_p, probe.t_g)
-        probe.polarity_direc = orthogonalize(probe.polarity_direc, probe.t_p)
-
-        # ---- Step 2: normalize direction vectors
-        def normalize(v):
-            n = np.linalg.norm(v)
-            return v / n if n > 0 else v
-
-        probe.t_g = normalize(probe.t_g)
-        probe.t_p = normalize(probe.t_p)
-        probe.polarity_direc = normalize(probe.polarity_direc)
 
         # ---- project activations to our 4d representation ----
         acts_4d = probe._project_acts(acts)  # numpy array
@@ -565,14 +543,16 @@ class TTPD4dEnh():
         # polarity_direc is 1d vector
         proj_p = acts_np @ self.polarity_direc   # shape (n_samples,)
 
-
         if self.t_p is not None:
             proj_t_p = acts_np @ self.t_p  # shape (n_samples,)
             # interaction term
             interaction = proj_p * proj_t_p
             p2 = proj_p ** 2
             tp2 = proj_t_p ** 2
-            acts_4d = np.column_stack([proj_t_g, proj_t_p, proj_p, interaction, p2, tp2])
+            int2 = interaction ** 2
+            # acts_4d = np.column_stack([proj_t_g, proj_t_p, proj_p, interaction, p2, tp2, int2])
+            acts_4d = np.column_stack([proj_t_g, p2, tp2, int2])
+
         else:
             acts_4d = np.column_stack([proj_t_g, proj_p])
 

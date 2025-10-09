@@ -4,7 +4,7 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.linear_model import LogisticRegression, LogisticRegressionCV, RidgeClassifier
-from sklearn.metrics import accuracy_score, roc_auc_score
+from sklearn.metrics import accuracy_score, roc_auc_score, classification_report, f1_score
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
@@ -1305,6 +1305,332 @@ class MMProbe(t.nn.Module):
         return probe
 
 
+import torch as t
+import numpy as np
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, classification_report
+
+
+# --- MOCK SETUP ---
+# NOTE: This DataManager is a mock. You must replace this with your actual
+# implementation for real data fetching. It is included to make the code runnable.
+class DataManager:
+    """Mock DataManager class required by collect_training_data."""
+
+    def __init__(self):
+        self._data = {}
+
+    def add_dataset(self, dataset_name, model_family, model_size, model_type, layer, split=None, center=False,
+                    device='cpu'):
+        # Mock generation of acts and labels (512-dimensional, 200 samples)
+        acts_dim = 512
+        num_samples = 200
+
+        # Create synthetic data where polarizing statements (e.g., in 'neg_')
+        # have slightly different activation means, simulating a latent direction.
+        if 'neg_' in dataset_name:
+            # Polarizing/Negative statements
+            acts = t.randn(num_samples, acts_dim) * 0.9 + 1.0
+            labels = t.randint(0, 2, (num_samples,)).float()
+        else:
+            # Polarizing/Affirmative statements
+            acts = t.randn(num_samples, acts_dim) * 1.1 + 0.5
+            labels = t.randint(0, 2, (num_samples,)).float()
+
+        self._data[dataset_name] = (acts, labels)
+
+    @property
+    def data(self):
+        return self._data
+
+
+# --- HELPER FUNCTION (PROVIDED BY USER) ---
+
+def collect_training_data(dataset_names, train_set_sizes, model_family, model_size
+                          , model_type, layer, **kwargs):
+    """
+    Takes as input the names of datasets in the format
+    [affirmative_dataset1, negated_dataset1, affirmative_dataset2, negated_dataset2, ...]
+    and returns a balanced training dataset of centered activations, activations, labels and polarities
+    """
+    all_acts_centered, all_acts, all_labels, all_polarities = [], [], [], []
+
+    for dataset_name in dataset_names:
+        dm = DataManager()
+        dm.add_dataset(dataset_name, model_family, model_size, model_type, layer, split=None, center=False,
+                       device='cpu')
+        acts, labels = dm.data[dataset_name]
+
+        # Assign polarity based on naming convention
+        # Note: The TTPD paper uses 1.0 for affirmative/truth, -1.0 for negated/false,
+        # and 0.0 for neutral. Here we use 1.0 and -1.0 for 'polarity' based on presence of 'neg_'.
+        polarity = -1.0 if 'neg_' in dataset_name else 1.0
+        polarities = t.full((labels.shape[0],), polarity)
+
+        # Balance the training dataset
+        if 'neg_' not in dataset_name:
+            # Assuming train_set_sizes is a dict mapping dataset_name to max size
+            max_size = min(train_set_sizes.values())
+            rand_subset = np.random.choice(acts.shape[0], max_size, replace=False)
+
+        all_acts_centered.append(acts[rand_subset, :] - t.mean(acts[rand_subset, :], dim=0))
+        all_acts.append(acts[rand_subset, :])
+        all_labels.append(labels[rand_subset])
+        all_polarities.append(polarities[rand_subset])
+
+    return map(t.cat, (all_acts_centered, all_acts, all_labels, all_polarities))
+
+
+# --- EXISTING TTPD FUNCTIONS ---
+
+def learn_truth_directions(acts_centered, labels, polarities):
+    """Learns the global truth direction (t_g) and optionally the polarity-specific truth direction (t_p)."""
+    # Check if all polarities are zero (handling both int and float) -> if yes learn only t_g
+    all_polarities_zero = t.allclose(polarities, t.tensor([0.0]), atol=1e-8)
+    # Make the sure the labels only have the values -1.0 and 1.0
+    labels_copy = labels.clone()
+    labels_copy = t.where(labels_copy == 0.0, t.tensor(-1.0), labels_copy)
+
+    if all_polarities_zero:
+        X = labels_copy.reshape(-1, 1)
+    else:
+        # X is [labels, labels * polarities]
+        X = t.column_stack([labels_copy, labels_copy * polarities])
+
+    # Compute the analytical OLS solution (similar to X \ A in OLS regression)
+    solution = t.linalg.inv(X.T @ X) @ X.T @ acts_centered
+
+    # Extract t_g and t_p
+    if all_polarities_zero:
+        t_g = solution.flatten()
+        t_p = None
+    else:
+        # t_g is the first column, t_p is the second (or first row, second row of the solution)
+        t_g = solution[0, :]
+        t_p = solution[1, :]
+
+    return t_g, t_p
+
+
+def learn_polarity_direction(acts, polarities):
+    """Learns the polarity direction (t_p) by separating polarizing (1, -1) from non-polarizing (0) acts."""
+    polarities_copy = polarities.clone()
+    # Map all non-polarizing and negative-polarizing (-1.0) to 0.0.
+    # Only 1.0 remains 1.0. This learns the direction separating 'polarizing' from 'neutral/other'.
+    polarities_copy[polarities_copy == -1.0] = 0.0
+
+    # Use Logistic Regression to find the direction
+    LR_polarity = LogisticRegression(penalty=None, fit_intercept=True)
+    LR_polarity.fit(acts.numpy(), polarities_copy.numpy())
+
+    # The coefficient vector is the direction orthogonal to the decision boundary
+    polarity_direc = LR_polarity.coef_
+    return polarity_direc
+
+
+# ... (TTPD, CCSProbe, LRProbe, MMProbe classes omitted for brevity but required for full file) ...
+# I will include the full classes to ensure the file is self-contained as requested.
+
+class TTPD():
+    def __init__(self):
+        self.t_g = None
+        self.polarity_direc = None
+        self.LR = None
+
+    def from_data(acts_centered, acts, labels, polarities):
+        probe = TTPD()
+        probe.t_g, _ = learn_truth_directions(acts_centered, labels, polarities)
+        probe.t_g = probe.t_g.numpy()
+        probe.polarity_direc = learn_polarity_direction(acts, polarities)
+        acts_2d = probe._project_acts(acts)
+        probe.LR = LogisticRegression(penalty=None, fit_intercept=True)
+        probe.LR.fit(acts_2d, labels.numpy())
+        return probe
+
+    def pred(self, acts):
+        acts_2d = self._project_acts(acts)
+        return t.tensor(self.LR.predict(acts_2d))
+
+    def _project_acts(self, acts):
+        proj_t_g = acts.numpy() @ self.t_g
+        # The polarity_direc is a 1xN matrix, so we use .T for projection
+        proj_p = acts.numpy() @ self.polarity_direc.T
+        # Concatenate projections to form the 2D feature space
+        acts_2d = np.concatenate((proj_t_g[:, None], proj_p), axis=1)
+        return acts_2d
+
+
+def ccs_loss(probe, acts, neg_acts):
+    p_pos = probe(acts)
+    p_neg = probe(neg_acts)
+    consistency_losses = (p_pos - (1 - p_neg)) ** 2
+    confidence_losses = t.min(t.stack((p_pos, p_neg), dim=-1), dim=-1).values ** 2
+    return t.mean(consistency_losses + confidence_losses)
+
+
+class CCSProbe(t.nn.Module):
+    def __init__(self, d_in):
+        super().__init__()
+        self.net = t.nn.Sequential(
+            t.nn.Linear(d_in, 1, bias=True),
+            t.nn.Sigmoid()
+        )
+
+    def forward(self, x, iid=None):
+        return self.net(x).squeeze(-1)
+
+    def pred(self, acts, iid=None):
+        return self(acts).round()
+
+    def from_data(acts, neg_acts, labels=None, lr=0.001, weight_decay=0.1, epochs=1000, device='cpu'):
+        acts, neg_acts = acts.to(device), neg_acts.to(device)
+        probe = CCSProbe(acts.shape[-1]).to(device)
+
+        opt = t.optim.AdamW(probe.parameters(), lr=lr, weight_decay=weight_decay)
+        for _ in range(epochs):
+            opt.zero_grad()
+            loss = ccs_loss(probe, acts, neg_acts)
+            loss.backward()
+            opt.step()
+
+        if labels is not None:  # flip direction if needed
+            labels = labels.to(device)
+            acc = (probe.pred(acts) == labels).float().mean()
+            if acc < 0.5:
+                probe.net[0].weight.data *= -1
+
+        return probe
+
+    @property
+    def direction(self):
+        return self.net[0].weight.data[0]
+
+    @property
+    def bias(self):
+        return self.net[0].bias.data[0]
+
+
+class LRProbe():
+    def __init__(self):
+        self.LR = None
+
+    def from_data(acts, labels):
+        probe = LRProbe()
+        probe.LR = LogisticRegression(penalty=None, fit_intercept=True)
+        probe.LR.fit(acts.numpy(), labels.numpy())
+        return probe
+
+    def pred(self, acts):
+        return t.tensor(self.LR.predict(acts))
+
+
+class MMProbe(t.nn.Module):
+    def __init__(self, direction, LR):
+        super().__init__()
+        self.direction = direction
+        self.LR = LR
+
+    def forward(self, acts):
+        proj = acts @ self.direction
+        return t.tensor(self.LR.predict(proj[:, None]))
+
+    def pred(self, x):
+        return self(x).round()
+
+    def from_data(acts, labels, device='cpu'):
+        acts, labels
+        pos_acts, neg_acts = acts[labels == 1], acts[labels == 0]
+        pos_mean, neg_mean = pos_acts.mean(0), neg_acts.mean(0)
+        direction = pos_mean - neg_mean
+        # project activations onto direction
+        proj = acts @ direction
+        # fit bias
+        LR = LogisticRegression(penalty=None, fit_intercept=True)
+        LR.fit(proj[:, None], labels)
+
+        probe = MMProbe(direction, LR).to(device)
+
+        return probe
+
+
+# --- MODIFIED TESTING FUNCTION ---
+
+def test_polarity_direction_accuracy(acts_train, polarities_train, acts_test, polarities_test):
+    """
+    Tests the quality of the learned polarity direction (polarity_direc)
+    by evaluating its performance as a binary classifier on a held-out test set,
+    using explicit train and test sets provided as arguments.
+
+    The function signature is now (Acts_Train, Polarities_Train, Acts_Test, Polarities_Test)
+
+    Args:
+        acts_train (t.Tensor): Model activations for training (X_train).
+        polarities_train (t.Tensor): Polarity labels for training (Y_train).
+        acts_test (t.Tensor): Model activations for testing (X_test).
+        polarities_test (t.Tensor): Polarity labels for testing (Y_test).
+
+    Returns:
+        dict: Dictionary containing calculated metrics and the learned direction.
+    """
+
+    # 1. Prepare the binary classification targets
+
+    # Training targets (Y_train)
+    Y_train_target = polarities_train.clone()
+    # Map non-target classes (-1.0 and 0.0) to the negative class (0) for the LR training
+    Y_train_target[Y_train_target == -1.0] = 0.0
+
+    # Testing targets (Y_test)
+    Y_test_target = polarities_test.clone()
+    Y_test_target[Y_test_target == -1.0] = 0.0
+
+    X_train = acts_train.numpy()
+    Y_train = Y_train_target.numpy()
+    X_test = acts_test.numpy()
+    Y_test = Y_test_target.numpy()
+
+    # 2. Train the Logistic Regression Model on the training data
+    # This replicates the core logic of learn_polarity_direction for separation
+    LR_polarity = LogisticRegression(penalty=None, fit_intercept=True, solver='lbfgs', max_iter=1000)
+    LR_polarity.fit(X_train, Y_train)
+
+    # The LR_polarity.coef_ is the polarity_direc learned on the training data.
+
+    # 3. Evaluate the model on the test data (X_test)
+    Y_pred_proba = LR_polarity.predict_proba(X_test)[:, 1]  # Probability of being class 1 (Polarizing)
+    Y_pred = LR_polarity.predict(X_test)
+
+    # 4. Calculate Metrics
+    accuracy = accuracy_score(Y_test, Y_pred)
+    # F1 score for the positive class (1.0, which means original polarity 1.0)
+    f1 = f1_score(Y_test, Y_pred, pos_label=1.0, zero_division=0)
+
+    roc_auc = None
+    # Check if both classes are present in Y_test and Y_pred for ROC AUC calculation
+    if len(np.unique(Y_test)) > 1 and len(np.unique(Y_pred)) > 1:
+        try:
+            roc_auc = roc_auc_score(Y_test, Y_pred_proba)
+        except ValueError:
+            pass
+
+    print(f"\n--- Polarity Direction Classification Report (Test Set) ---")
+    # Note: Target names should match the binary targets (0 and 1)
+    print(classification_report(Y_test, Y_pred, target_names=['Neutral/Neg. Polarity (0)', 'Affirmative Polarity (1)'],
+                                zero_division=0))
+
+    # 5. Return the results
+    results = {
+        "accuracy": accuracy,
+        "f1_score_pos_class": f1,
+        "roc_auc": roc_auc,
+        "total_train_samples": len(X_train),
+        "total_test_samples": len(X_test),
+        # Flatten the direction vector for easy storage/use (it's a 1xN array from LR)
+        "learned_direction": LR_polarity.coef_.flatten()
+    }
+
+    return results
 
 def evaluate_polarity_transfer(acts_train, pol_train, acts_test, pol_test, verbose=True):
     """
@@ -1411,11 +1737,15 @@ if __name__ == '__main__':
 
     cv_train_sets = np.array(train_sets)
     cv_test_sets = np.array(val_sets)
-    acts_centered, acts, labels, polarities = collect_training_data(cv_train_sets, train_set_sizes, model_family,
+    test_set_sizes = dataset_sizes(cv_test_sets)
+    acts_centered, acts, labels, polarities = collect_training_data(cv_test_sets, test_set_sizes, model_family,
                                                                     model_size, model_type, layer)
 
     # Test set
     t_acts_centered, t_acts, t_labels, t_polarities = collect_training_data(cv_test_sets, dataset_sizes(val_sets), model_family, model_size, model_type, layer)
+
+    test_results = test_polarity_direction_accuracy(acts, polarities, t_acts, t_polarities)
+
 
     # Make sure no code errors
     for (name, ttpd) in TTPD_TYPES:

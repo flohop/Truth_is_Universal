@@ -324,16 +324,44 @@ if __name__ == '__main__':
 
     # Hyperparameter search space
     search_space = {
+        # Logistic Regression hyperparameters
         'C': tune.loguniform(1e-3, 10),
-        'degree': tune.choice([1, 2, 3]),
         'fit_intercept': tune.choice([True, False]),
-        'solver': tune.choice(['lbfgs', 'saga']),
+        'solver': tune.choice(['lbfgs', 'saga', 'liblinear']),
+
+        # Polynomial features
+        'degree': tune.choice([1, 2, 3]),
+        'include_bias': tune.choice([True, False]),
+
+        # Scaling options
+        'use_scaler': tune.choice([True, False]),
+
+        # Feature / interaction combinations
         'interaction_features': tune.choice([
-            ['proj_t_p', 'proj_t_g'],
-            ['proj_t_p', 'proj_t_g', "proj_p"],
-            ['proj_t_p', 'proj_t_g', "proj_p", "proj_t_g+proj_t_p"],
-            ['proj_t_p', 'proj_t_g', "proj_p", "proj_t_g-proj_t_p"],
-            ['proj_t_p', 'proj_t_g', "proj_p", "proj_t_g*proj_p"],
+            # main effects only
+            ['proj_t_g', 'proj_t_p'],
+            ['proj_t_g', 'proj_t_p', 'proj_p'],
+            ['proj_t_g', 'proj_t_p', 'inter1'],
+
+            # simple pairwise interactions
+            ['proj_t_g', 'proj_t_p', 'proj_t_g+proj_t_p'],
+            ['proj_t_g', 'proj_t_p', 'proj_t_g-proj_t_p'],
+            ['proj_t_g', 'proj_t_p', 'proj_t_g*proj_t_p'],
+
+            # interactions with polarity
+            ['proj_t_g', 'proj_t_p', 'proj_p', 'proj_t_g*proj_p'],
+            ['proj_t_g', 'proj_t_p', 'proj_p', 'proj_t_p*proj_p'],
+            ['proj_t_g', 'proj_t_p', 'proj_p', 'proj_t_g*proj_t_p*proj_p'],
+
+            # include additive interaction term from TTPDTest
+            ['proj_t_g', 'proj_t_p', 'proj_p', 'inter1'],
+            ['proj_t_g', 'proj_t_p', 'proj_p', 'inter1', 'proj_t_g*proj_p'],
+            ['proj_t_g', 'proj_t_p', 'proj_p', 'inter1', 'proj_t_p*proj_p'],
+            ['proj_t_g', 'proj_t_p', 'proj_p', 'inter1', 'proj_t_g*proj_t_p*proj_p'],
+
+            # higher-order combos
+            ['proj_t_g', 'proj_t_p', 'proj_p', 'inter1', 'proj_t_g*proj_p', 'proj_t_g*proj_t_p'],
+            ['proj_t_g', 'proj_t_p', 'proj_p', 'inter1', 'proj_t_g+proj_t_p', 'proj_t_p*proj_p']
         ])
     }
 

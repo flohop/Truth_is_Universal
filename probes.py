@@ -1,32 +1,62 @@
-
-from sklearn.exceptions import ConvergenceWarning
-from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, train_test_split
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
-import warnings
 import torch
 import torch as t
 import numpy as np
 from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler, PolynomialFeatures
+from sympy.physics.units import degree
 
 from utils import dataset_sizes, collect_training_data
 
+import ray
+from ray import tune
+from ray.tune.tune import BasicVariantGenerator
 
-param_grid = [
-    {
-        'solver': ['liblinear'],
-        'penalty': ['l1', 'l2'],
-        'C': [1e-4, 1e-3, 1e-2, 1e-1, 1, 10, 100],
-        'max_iter': [200, 500, 1000]
-    },
 
-    {
-        'solver': ['saga'],
-        'penalty': ['l1', 'l2', 'elasticnet', None],
-        'C': [1e-4, 1e-3, 1e-2, 1e-1, 1, 10, 100],
-        'l1_ratio': [0.0, 0.25, 0.5, 0.75, 1.0],  # only used for elasticnet
-        'max_iter': [200, 500, 1000]
-    }
-]
+def train_ttpd_test(config, acts_centered, acts, labels, polarities):
+    from copy import deepcopy
+
+    # Split into train/validation
+    acts_train, acts_val, labels_train, labels_val = train_test_split(
+        acts, labels.numpy(), test_size=0.2, random_state=42
+    )
+
+    probe = TTPDTest()
+
+    # Learn truth directions
+    probe.t_g, probe.t_p = learn_truth_directions(acts_centered, labels, polarities)
+    probe.t_g = probe.t_g.numpy()
+    probe.t_p = probe.t_p.numpy()
+
+    # Learn polarity direction
+    probe.polarity_direc = learn_polarity_direction(acts, polarities)
+
+    # Project activations
+    acts_2d_train = probe._project_acts(acts_train)
+    acts_2d_val = probe._project_acts(acts_val)
+
+    # Build pipeline with hyperparameters from config
+    probe.LR = Pipeline([
+        ('scaler', StandardScaler()),
+        ('poly', PolynomialFeatures(degree=config['degree'], include_bias=True)),
+        ('lr', LogisticRegression(
+            penalty='l2',
+            C=config['C'],
+            fit_intercept=config['fit_intercept'],
+            solver=config['solver'],
+            max_iter=2000
+        ))
+    ])
+
+    # Fit and evaluate
+    probe.LR.fit(acts_2d_train, labels_train)
+    preds = probe.LR.predict(acts_2d_val)
+    acc = accuracy_score(labels_val, preds)
+
+    # Report to Ray Tune
+    tune.report({"accuracy": acc})
 
 
 def learn_truth_directions(acts_centered, labels, polarities):
@@ -61,6 +91,7 @@ def polarity_direction_lr(acts, polarities):
     polarities_copy = polarities.clone()
     polarities_copy[polarities_copy == -1.0] = 0.0
     LR_polarity = LogisticRegression(penalty='l2', C=0.1, fit_intercept=True, solver='lbfgs', max_iter=2000)
+    #LR_polarity = LogisticRegression(penalty=None, fit_intercept=True)
     LR_polarity.fit(acts.numpy(), polarities_copy.numpy())
     return LR_polarity
 
@@ -76,8 +107,8 @@ def measure_polarity_direction_lr(train_acts, train_polarities, valid_acts, vali
     num_diff = np.sum(~np.isclose(pred, valid_polarities))
     return 1 -  num_diff / len(valid_acts)
 
-class TTPDAffirm:
-    # Force LR to only use truth and polarity dimensions
+
+class TTPDTest:
     def __init__(self):
         self.t_g = None
         self.t_p = None
@@ -86,43 +117,42 @@ class TTPDAffirm:
 
     @staticmethod
     def from_data(acts_centered, acts, labels, polarities):
-        probe = TTPDAffirm()
+        probe = TTPDTest()
 
-        # Learn direction for truth
+        # Learn truth directions
         probe.t_g, probe.t_p = learn_truth_directions(acts_centered, labels, polarities)
         probe.t_g = probe.t_g.numpy()
         probe.t_p = probe.t_p.numpy()
 
-        # predict if the statement is affirmative or negated
-        # gives a weight vector in activation space pointing towards affirmative vs negative phrasing
-
-        # learn direction for polarity
-        # project all activations into those 2 directions
+        # Learn polarity direction
         probe.polarity_direc = learn_polarity_direction(acts, polarities)
 
-        # project all dimensions onto the 2d truth dimension (t_g and polarity)
+        # Project activations
         acts_2d = probe._project_acts(acts)
 
-        probe.LR = LogisticRegression(penalty="l2", fit_intercept=True, solver='lbfgs', max_iter=2000)
+        # Full pipeline with scaling + polynomial features
+        probe.LR = Pipeline([
+            ('scaler', StandardScaler()),
+            ('poly', PolynomialFeatures(degree=1, include_bias=True)),
+            ('lr', LogisticRegression(C=0.1959, penalty='l2', fit_intercept=True, solver="saga", max_iter=2000))
+        ])
 
-        # model only has to figure out truth/lie given these two features
+        # Fit on all 4 features
         probe.LR.fit(acts_2d, labels.numpy())
         return probe
 
     def pred(self, acts):
-        # same projection of all dimensions onto 2d
         acts_2d = self._project_acts(acts)
-
-        # use prev trained LR using these 2 dimensions for predictions
         return t.tensor(self.LR.predict(acts_2d))
 
     def _project_acts(self, acts):
-        proj_t_g = (acts.numpy() @ self.t_g)  # project onto general truth direction
-        proj_p = (acts.numpy() @ self.polarity_direc.T)
-        proj_t_p = (acts.numpy() @ self.t_p)[:, None] * proj_p
-        interaction = (proj_t_g[:, None] + proj_t_p)
-        acts_2d = np.concatenate((proj_t_g[:, None], proj_t_p, interaction, proj_p), axis=1)
+        proj_t_g = (acts.numpy() @ self.t_g)[:, None]  # general truth
+        proj_p = (acts.numpy() @ self.polarity_direc.T)  # polarity
+        proj_t_p = (acts.numpy() @ self.t_p)[:, None] * proj_p  # interaction
+        # inter1 = proj_t_g + proj_t_p  # simple additive interaction
+        acts_2d = np.concatenate((proj_t_g, proj_t_p, proj_p), axis=1)
         return acts_2d
+
 
 
 class TTPD():
@@ -135,38 +165,28 @@ class TTPD():
     @staticmethod
     def from_data(acts_centered, acts, labels, polarities):
         probe = TTPD()
-        # do a linear regression where X encodes truth.lie polarity, we ignore tP
         # Learn direction for truth
         probe.t_g, _ = learn_truth_directions(acts_centered, labels, polarities)
         probe.t_g = probe.t_g.numpy()
 
-        # predict if the statement is affirmative or negated
-        # gives a weight vector in activation space pointing towards affirmative vs negative phrasing
-
-        # learn direction for polarity
-        # project all activations into those 2 directions
+        # Learn direction for polarity
         probe.polarity_direc = learn_polarity_direction(acts, polarities)
 
-        # project all dimensions onto the 2d truth dimension (t_g and polarity)
+        # Project all dimensions onto the 2D truth/polarity space
         acts_2d = probe._project_acts(acts)
 
+        # Fit logistic regression
         probe.LR = LogisticRegression(penalty=None, fit_intercept=True)
-
-        # model only has to figure out truth/lie given these two features
         probe.LR.fit(acts_2d, labels.numpy())
         return probe
-    
+
     def pred(self, acts):
-        # same projection of all dimensions onto 2d
         acts_2d = self._project_acts(acts)
-
-        # use prev trained LR using these 2 dimensions for predictions
         return t.tensor(self.LR.predict(acts_2d))
-    
-    def _project_acts(self, acts):
-        proj_t_g = acts.numpy() @ self.t_g # project onto general truth direction
-        proj_p = acts.numpy() @ self.polarity_direc.T # project into polarity dimension (affirm vs neg)
 
+    def _project_acts(self, acts):
+        proj_t_g = acts.numpy() @ self.t_g
+        proj_p = acts.numpy() @ self.polarity_direc.T
         acts_2d = np.concatenate((proj_t_g[:, None], proj_p), axis=1)
         return acts_2d
 
@@ -265,7 +285,7 @@ class MMProbe(t.nn.Module):
 # (title, object)
 TTPD_TYPES = [
         # ("TTPD", TTPD),
-        ("TTPDAffirm", TTPDAffirm)
+        ("TTPDAffirm", TTPDTest)
             ]
 
 # To speed up testing, for full report use all probes
@@ -292,8 +312,41 @@ if __name__ == '__main__':
                 "element_symb_conj", "element_symb_disj", "facts_conj", "facts_disj",
                 "common_claim_true_false", "counterfact_true_false"]
 
-    i = 1
-    cv_train_sets = np.delete(np.array(train_sets), [i, i + 1], axis=0)
+    # load training data
+    acts_centered, acts, labels, polarities = collect_training_data(train_sets, train_set_sizes, model_family,
+                                                                    model_size,
+                                                                    model_type, layer)
 
-    acts_centered, acts, labels, polarities = collect_training_data(cv_train_sets, train_set_sizes, model_family,
-                                                                    model_size, model_type, layer)
+    # TTPDTest.from_data(acts_centered, acts, labels, polarities)
+
+
+    ray.init(ignore_reinit_error=True)
+
+    # Hyperparameter search space
+    search_space = {
+        'C': tune.loguniform(1e-3, 10),
+        'degree': tune.choice([1, 2, 3]),
+        'fit_intercept': tune.choice([True, False]),
+        'solver': tune.choice(['lbfgs', 'saga']),
+        'interaction_features': tune.choice([
+            ['proj_t_p', 'proj_t_g'],
+            ['proj_t_p', 'proj_t_g', "proj_p"],
+            ['proj_t_p', 'proj_t_g', "proj_p", "proj_t_g+proj_t_p"],
+            ['proj_t_p', 'proj_t_g', "proj_p", "proj_t_g-proj_t_p"],
+            ['proj_t_p', 'proj_t_g', "proj_p", "proj_t_g*proj_p"],
+        ])
+    }
+
+    # Run Ray Tune
+    analysis = tune.run(
+        tune.with_parameters(train_ttpd_test, acts_centered=acts_centered, acts=acts, labels=labels,
+                             polarities=polarities),
+        resources_per_trial={"cpu": 2},
+        metric="accuracy",
+        mode="max",
+        num_samples=20,
+        config=search_space,
+        search_alg=BasicVariantGenerator()
+    )
+
+    print("Best config found: ", analysis.best_config)

@@ -1,14 +1,19 @@
 import torch
 import torch as t
 import numpy as np
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from sklearn.exceptions import ConvergenceWarning
-from sklearn.utils._testing import ignore_warnings
+import warnings
+
 
 from utils import dataset_sizes, collect_training_data
+
+# Cache
+_polarity_params_cache = {}   # key: (shape, dtype) -> params dict
+_ttpd_params_cache = {}       # key: (shape, dtype) -> params dict
 
 param_grid = [
     # liblinear: supports L1, L2
@@ -56,13 +61,6 @@ param_grid_pipeline = [
      'lr__max_iter': [2000]}  # elasticnet often needs more iterations
 ]
 
-
-# Define your pipeline
-pipeline = Pipeline([
-    ('scaler', StandardScaler()),
-    ('lr', LogisticRegression())
-])
-
 # Define hyperparameter grid separately
 param_gridp_pol_dir = {
     'lr__C': [0.01, 0.1],             # typical first test: low, medium, high regularization
@@ -71,55 +69,132 @@ param_gridp_pol_dir = {
     'lr__max_iter': [1000]              # enough iterations to converge in most cases
 }
 
+def find_best_lr_params(X, y, param_grid=None, n_iter=15, random_state=42, scoring='balanced_accuracy'):
+    """
+    X: numpy array or torch tensor (n_samples, n_features)
+    y: numpy array or torch tensor (n_samples,) with labels in {0,1}
+    Returns: best_params dict (keys are sklearn LogisticRegression parameter names)
+    """
+    # convert tensors to numpy if needed
+    if isinstance(X, t.Tensor):
+        X_np = X.numpy()
+    else:
+        X_np = np.asarray(X)
 
-def find_best_lr_params(X, y, param_grid=None, n_iter=15, random_state=42):
+    if isinstance(y, t.Tensor):
+        y_np = y.numpy()
+    else:
+        y_np = np.asarray(y)
+
     if param_grid is None:
         param_grid = [
-            # liblinear solver
             {'lr__solver': ['liblinear'],
              'lr__penalty': ['l1', 'l2'],
-             'lr__C': [0.01, 0.1, 0.5, 1, 10],
+             'lr__C': [0.01, 0.05, 0.1, 0.5, 1, 10],
              'lr__max_iter': [1000, 1500]},
 
-            # saga solver with l1 or l2 penalty
             {'lr__solver': ['saga'],
              'lr__penalty': ['l1', 'l2'],
              'lr__C': [0.1, 1],
              'lr__max_iter': [1000, 2000, 3000]},
 
-            # saga solver with elasticnet
             {'lr__solver': ['saga'],
              'lr__penalty': ['elasticnet'],
              'lr__C': [0.01, 0.1, 1, 10],
              'lr__l1_ratio': [0.1, 0.5, 0.9],
-             'lr__max_iter': [1000, 2000]}
+             'lr__max_iter': [2000, 3000]}
         ]
 
     pipeline = Pipeline([
         ('scaler', StandardScaler()),
-        ('lr', LogisticRegression(fit_intercept=True))
+        ('lr', LogisticRegression(fit_intercept=True, max_iter=2000))
     ])
 
-    grid_search = RandomizedSearchCV(
+    # randomized search over pipeline's lr parameters
+    rs = RandomizedSearchCV(
         estimator=pipeline,
         param_distributions=param_grid,
         n_iter=n_iter,
-        scoring='accuracy',
+        scoring=scoring,
         cv=5,
         n_jobs=-1,
         verbose=0,
         random_state=random_state
     )
 
-    grid_search.fit(X, y)
-    # Extract only the LR step parameters
+    # catch convergence warnings, but let Grid search pick larger max_iter if needed
+    rs.fit(X_np, y_np)
+
+
+    # extract the best LR params (they are prefixed 'lr__' in rs.best_params_)
     best_params = {}
-    for key, value in grid_search.best_params_.items():
-        if key.startswith('lr__'):
-            best_params[key[4:]] = value
+    for k, v in rs.best_params_.items():
+        if k.startswith('lr__'):
+            best_params[k[4:]] = v
 
     return best_params
 
+
+def learn_truth_directions_new(acts_centered, labels, polarities, ridge=1e-4):
+    """
+    Returns t_g, t_p (torch tensors). If polarities are all zero or absent, returns (t_g, None).
+    Inputs:
+        acts_centered: torch tensor (n_samples, d_act)
+        labels: torch tensor (n_samples,) with {0,1}
+        polarities: torch tensor (n_samples,) with {-1, 1} or {0,1} (we convert)
+    """
+    # ensure float tensors
+    acts_centered = acts_centered.to(dtype=t.float32)
+    labels = labels.to(dtype=t.float32).clone()
+
+    # normalize label space to signed {-1, +1} for the regression equation
+    # expects labels in {0,1} originally; if they are already -1/1, this still works
+    if labels.min() >= 0.0:
+        y_signed = 2.0 * labels - 1.0   # 0->-1, 1->+1
+    else:
+        y_signed = labels
+
+    # handle polarities: convert -1 -> -1, 1 -> +1, or 0 stays 0
+    polarities = polarities.to(dtype=t.float32).clone()
+    if polarities.min() >= 0.0 and polarities.max() <= 1.0:
+        # convert {0,1} -> {-1,1} only if needed
+        polarities_signed = 2.0 * polarities - 1.0
+    else:
+        polarities_signed = polarities
+
+    # all zeros?
+    all_polarities_zero = t.allclose(polarities_signed, t.zeros_like(polarities_signed), atol=1e-8)
+
+    # build design matrix X
+    if all_polarities_zero:
+        X = y_signed.reshape(-1, 1)  # (n_samples, 1)
+    else:
+        # include interaction term y * polarity as second regressor
+        X = t.column_stack([y_signed, y_signed * polarities_signed])  # (n_samples, 2)
+
+    # solve (X^T X + ridge I) w = X^T acts_centered  --> stable ridge regression
+    XT_X = X.T @ X
+    d = XT_X.shape[0]
+    reg = ridge * t.eye(d, dtype=XT_X.dtype)
+    A = XT_X + reg
+    B = X.T @ acts_centered  # (d, d_act)
+
+    # solve for solution: A @ W = B  -> W = A^{-1} B
+    # use torch.linalg.solve for numerical stability
+    try:
+        W = t.linalg.solve(A, B)  # (d, d_act)
+    except RuntimeError:
+        # fallback to pinv (safe)
+        W = t.pinverse(A) @ B
+
+    if all_polarities_zero:
+        t_g = W.flatten()  # shape (d_act,)
+        t_p = None
+    else:
+        t_g = W[0, :]
+        t_p = W[1, :]
+
+    return t_g, t_p
 
 def learn_truth_directions(acts_centered, labels, polarities):
     # Check if all polarities are zero (handling both int and float) -> if yes learn only t_g
@@ -158,51 +233,38 @@ def learn_polarity_direction(acts, polarities):
     return polarity_direc
 
 
-def learn_polarity_direction_hyper(acts, polarities, best_params=None):
+def learn_polarity_direction_hyper(acts, polarities, best_params=None, scoring='balanced_accuracy'):
     """
-    Learns the polarity direction using LogisticRegression.
-    If best_params is provided, it uses them directly instead of running grid search.
-
-    Parameters:
-        acts: tensor of activations
-        polarities: tensor of polarities (-1 or 1)
-        best_params: dict of best LogisticRegression parameters (optional)
-
-    Returns:
-        polarity_direc: numpy array of learned coefficients
+    acts: torch tensor (n_samples, d_act)
+    polarities: torch tensor (n_samples,) with {-1,1} or {0,1}
+    best_params: optional dict of LR params (to avoid search)
     """
-    polarities_copy = polarities.clone()
-    polarities_copy[polarities_copy == -1.0] = 0.0
+    # unify shapes
+    acts_np = acts.numpy() if isinstance(acts, t.Tensor) else np.asarray(acts)
+    polar_np = polarities.numpy() if isinstance(polarities, t.Tensor) else np.asarray(polarities)
 
-    # If best_params are given, skip grid search
+    key = (acts_np.shape, polar_np.shape, acts_np.dtype)
+
+    # check cache
     if best_params is not None:
-        lr = LogisticRegression(fit_intercept=True, **best_params)
-        pipeline = Pipeline([
-            # ("scaler", StandardScaler()),
-            ("lr", lr)
-        ])
-        pipeline.fit(acts.numpy(), polarities_copy.numpy())
-        best_lr = pipeline.named_steps['lr']
+        lr_params = best_params
     else:
-        grid_search = RandomizedSearchCV(
-            estimator=Pipeline([
-                # ("scaler", StandardScaler()),
-                ("lr", LogisticRegression(fit_intercept=True)),
-            ]),
-            param_distributions=param_gridp_pol_dir,
-            n_iter=10,
-            scoring="accuracy",
-            cv=3,
-            n_jobs=-1,
-            verbose=0,
-            random_state=42
-        )
-        grid_search.fit(acts.numpy(), polarities_copy.numpy())
-        best_lr = grid_search.best_estimator_.named_steps['lr']
+        # run search and cache result
+        lr_params = find_best_lr_params(acts_np, polar_np, n_iter=10, scoring=scoring)
 
-    polarity_direc = best_lr.coef_
+    # Build pipeline and fit (pipeline includes scaler)
+    lr = LogisticRegression(fit_intercept=True, **lr_params)
+    pipeline = Pipeline([("scaler", StandardScaler()), ("lr", lr)])
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=ConvergenceWarning)
+        pipeline.fit(acts_np, polar_np)
+
+    best_lr = pipeline.named_steps['lr']
+    coef = best_lr.coef_  # shape (1, d_act) or (n_classes-1, d_act)
+    # flatten to 1d (take first row)
+    polarity_direc = np.ravel(coef[0])
     return polarity_direc
-
 
 # Extend the original implementation to use tP * p
 class TTPD3dTpInv():
@@ -386,69 +448,134 @@ class TTPD2d():
 
 
 class TTPD4dEnh():
-    polarity_params = None
-    ttpd_params = None
-    # Force LR to only use truth and polarity dimensions
-    def __init__(self):
+    polarity_params_cache = _polarity_params_cache
+    ttpd_params_cache = _ttpd_params_cache
+
+
+    def __init__(self, use_cache=True):
         self.t_g = None
         self.t_p = None
-        self.polarity_direc = None
-        self.LR = None
+        self.polarity_direc = None         # numpy 1d vector
+        self.pipeline = None               # sklearn Pipeline containing scaler+lr
+        self.use_cache = use_cache
 
     @staticmethod
-    @ignore_warnings(category=ConvergenceWarning)
-    @ignore_warnings(category=UserWarning)
-    def from_data(acts_centered, acts, labels, polarities):
+    def from_data(acts_centered, acts, labels, polarities, scoring='balanced_accuracy'):
+        """
+        acts_centered: torch tensor (n_samples, d_act)
+        acts: torch tensor (n_samples, d_act)
+        labels: torch tensor (n_samples,) expected in {0,1}
+        polarities: torch tensor (n_samples,) - in {-1,1} or {0,1}
+        """
         probe = TTPD4dEnh()
-        # do a linear regression where X encodes truth.lie polarity, we ignore tP
-        # Learn direction for truth
-        probe.t_g, probe.t_p = learn_truth_directions(acts_centered, labels, polarities)
-        probe.t_g = probe.t_g.numpy()
-        probe.t_p = probe.t_p.numpy() if probe.t_p is not None else None
 
-        if TTPD4dEnh.polarity_params is None:
-            print("Set polarity parameters")
-            TTPD4dEnh.polarity_params = find_best_lr_params(acts, polarities)
-            print("Params (Polarity): ", TTPD4dEnh.polarity_params)
+        # ---- learn truth directions (regularized LS) ----
+        probe.t_g, probe.t_p = learn_truth_directions_new(acts_centered, labels, polarities, ridge=1e-4)
+        # make numpy arrays for projection
+        probe.t_g = probe.t_g.numpy() if isinstance(probe.t_g, t.Tensor) else np.asarray(probe.t_g)
+        probe.t_p = probe.t_p.numpy() if (probe.t_p is not None and isinstance(probe.t_p, t.Tensor)) else (probe.t_p if probe.t_p is None else np.asarray(probe.t_p))
 
-        # project all activations into those 2 directions
-        probe.polarity_direc = learn_polarity_direction_hyper(acts, polarities, TTPD4dEnh.polarity_params)
+        cache_key = (acts.shape, polarities.shape, acts.dtype)
 
-        # project all dimensions onto the 2d truth dimension (t_g and polarity)
-        acts_4d = probe._project_acts(acts)
+        if probe.use_cache and cache_key in TTPD4dEnh.polarity_params_cache:
+            polarity_params = TTPD4dEnh.polarity_params_cache[cache_key]
+        else:
+            print("Training Polarity params")
+            polarity_params = find_best_lr_params(acts, polarities, n_iter=10, random_state=42, scoring=scoring)
+            if probe.use_cache:
+                TTPD4dEnh.polarity_params_cache[cache_key] = polarity_params
+            print("Found: ", polarity_params)
 
-        if TTPD4dEnh.ttpd_params is None:
-            print("Set ttpd parameters")
-            TTPD4dEnh.ttpd_params = find_best_lr_params(acts_4d, labels)
-            print("Params (TTPD): ", TTPD4dEnh.ttpd_params)
+        probe.polarity_direc = learn_polarity_direction_hyper(acts, polarities, best_params=polarity_params, scoring=scoring)
+        # ensure 1d numpy
+        probe.polarity_direc = np.ravel(probe.polarity_direc)
 
-        lr = LogisticRegression(fit_intercept=True, **TTPD4dEnh.ttpd_params)
-        pipeline = Pipeline([
-            ("scaler", StandardScaler()),
-            ("lr", lr),
-        ])
-        pipeline.fit(acts_4d, labels.numpy())
-        probe.LR = pipeline.named_steps["lr"]
+        # ---- STEP 1: Orthogonalize tP and P against tG ----
+        def orthogonalize(v, base):
+            return v - np.dot(v, base) * base
 
+        probe.t_g = np.asarray(probe.t_g, dtype=np.float64)
+        probe.t_p = np.asarray(probe.t_p, dtype=np.float64)
+        probe.polarity_direc = np.asarray(probe.polarity_direc, dtype=np.float64)
+
+        probe.t_p = orthogonalize(probe.t_p, probe.t_g)
+        probe.polarity_direc = orthogonalize(probe.polarity_direc, probe.t_p)
+
+        # ---- Step 2: normalize direction vectors
+        def normalize(v):
+            n = np.linalg.norm(v)
+            return v / n if n > 0 else v
+
+        probe.t_g = normalize(probe.t_g)
+        probe.t_p = normalize(probe.t_p)
+        probe.polarity_direc = normalize(probe.polarity_direc)
+
+        # ---- project activations to our 4d representation ----
+        acts_4d = probe._project_acts(acts)  # numpy array
+
+        # ---- tune or reuse ttpd hyperparams keyed by acts_4d shape ----
+        ttpd_cache_key = (acts_4d.shape, acts_4d.dtype)
+        if probe.use_cache and ttpd_cache_key in TTPD4dEnh.ttpd_params_cache:
+            ttpd_params = TTPD4dEnh.ttpd_params_cache[ttpd_cache_key]
+        else:
+            print("Training TTPD params")
+            ttpd_params = find_best_lr_params(acts_4d, labels, n_iter=12, random_state=123, scoring=scoring)
+            if probe.use_cache:
+                TTPD4dEnh.ttpd_params_cache[ttpd_cache_key] = ttpd_params
+            print("Found: ", ttpd_params)
+
+        # ---- build final pipeline (keeps scaler for prediction) ----
+        lr = LogisticRegression(fit_intercept=True, **ttpd_params)
+        pipeline = Pipeline([("scaler", StandardScaler()), ("lr", lr)])
+
+        # fit with convergence warnings suppressed; if convergence occurs, try increasing max_iter
+        acts4_np = acts_4d if isinstance(acts_4d, np.ndarray) else np.asarray(acts_4d)
+        labels_np = labels.numpy() if isinstance(labels, t.Tensor) else np.asarray(labels)
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=ConvergenceWarning)
+                pipeline.fit(acts4_np, labels_np)
+        except Exception as e:
+            # If solver struggles, try increasing max_iter and refit (robust fallback)
+            lr.set_params(max_iter=5000)
+            pipeline = Pipeline([("scaler", StandardScaler()), ("lr", lr)])
+            pipeline.fit(acts4_np, labels_np)
+
+        probe.pipeline = pipeline
         return probe
 
     def pred(self, acts):
-        # same projection of all dimensions onto 3d
+        """
+        acts: torch tensor or numpy array (n_samples, d_act)
+        Returns predictions as torch tensor of {0,1}
+        """
         acts_4d = self._project_acts(acts)
-
-        # use prev trained LR using these 2 dimensions for predictions
-        return t.tensor(self.LR.predict(acts_4d))
+        # use pipeline.predict to ensure scaler is applied
+        preds = self.pipeline.predict(acts_4d)
+        return t.tensor(preds, dtype=t.int64)
 
     def _project_acts(self, acts):
-        acts_np = acts.numpy()
-        proj_t_g = acts_np @ self.t_g  # project onto general truth direction
-        proj_p = acts_np @ self.polarity_direc.T
+        """
+        Projects acts into [proj_t_g, proj_t_p, proj_p, proj_p * proj_t_p] (numpy array)
+        Ensures consistent vector shapes and flattens polarity projection to 1D.
+        """
+        acts_np = acts.numpy() if isinstance(acts, t.Tensor) else np.asarray(acts)
+        # ensure t_g and polarity vectors exist
+        proj_t_g = acts_np @ self.t_g   # shape (n_samples,)
+        # polarity_direc is 1d vector
+        proj_p = acts_np @ self.polarity_direc   # shape (n_samples,)
+
 
         if self.t_p is not None:
-            proj_t_p = (acts_np @ self.t_p)
-            acts_4d = np.concatenate((proj_t_g[:, None], proj_t_p[:, None], proj_p), axis=1)
+            proj_t_p = acts_np @ self.t_p  # shape (n_samples,)
+            # interaction term
+            interaction = proj_p * proj_t_p
+            p2 = proj_p ** 2
+            tp2 = proj_t_p ** 2
+            acts_4d = np.column_stack([proj_t_g, proj_t_p, proj_p, interaction, p2, tp2])
         else:
-            acts_4d = np.concatenate((proj_t_g[:, None], proj_p), axis=1)
+            acts_4d = np.column_stack([proj_t_g, proj_p])
+
         return acts_4d
 
 
@@ -466,7 +593,7 @@ class TTPD4d():
         probe = TTPD4d()
         # do a linear regression where X encodes truth.lie polarity, we ignore tP
         # Learn direction for truth
-        probe.t_g, probe.t_p = learn_truth_directions(acts_centered, labels, polarities)
+        probe.t_g, probe.t_p = learn_truth_directions_new(acts_centered, labels, polarities)
         probe.t_g = probe.t_g.numpy()
         probe.t_p = probe.t_p.numpy() if probe.t_p is not None else None
 
@@ -648,7 +775,7 @@ TTPD_TYPES = [
         # ("TTPD", TTPD),
         #("TTPD4d", TTPD4d),
         ("TTPD4dHyper", TTPD4dEnh),
-        ("TTPD2d", TTPD2d),
+        #("TTPD2d", TTPD2d),
     #  ("TTPD3dTp", TTPD3dTp)
             ]
 

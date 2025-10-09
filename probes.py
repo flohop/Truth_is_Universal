@@ -1,13 +1,15 @@
 import torch
 import torch as t
 import numpy as np
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.exceptions import ConvergenceWarning
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegression, LogisticRegressionCV, RidgeClassifier
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, PolynomialFeatures
 import warnings
 
+from sklearn.svm import SVC
 
 from utils import dataset_sizes, collect_training_data
 
@@ -663,6 +665,548 @@ class TTPD():
         return acts_2d
 
 
+# ============= APPROACH 1: Enhanced Feature Engineering TTPD =============
+class EnhancedTTPD():
+    """
+    Improves upon original TTPD with:
+    - Better feature engineering (polynomial features, interaction terms)
+    - Multiple truth directions (t_g, t_p, and cross-product)
+    - Regularization tuning
+    """
+
+    def __init__(self):
+        self.t_g = None
+        self.t_p = None
+        self.polarity_direc = None
+        self.LR = None
+        self.scaler = StandardScaler()
+        self.poly_features = PolynomialFeatures(degree=2, include_bias=False)
+
+    def learn_truth_directions(self, acts_centered, labels, polarities):
+        """Enhanced truth direction learning with better numerical stability"""
+        all_polarities_zero = t.allclose(polarities, t.tensor([0.0]), atol=1e-8)
+        labels_copy = t.where(labels == 0.0, t.tensor(-1.0), labels.float())
+
+        if all_polarities_zero:
+            X = labels_copy.reshape(-1, 1)
+        else:
+            # Add regularization term for numerical stability
+            X = t.column_stack([labels_copy, labels_copy * polarities])
+
+        # Use ridge regression for more stable solution
+        lambda_reg = 0.01
+        XtX = X.T @ X
+        XtX_reg = XtX + lambda_reg * t.eye(XtX.shape[0])
+        solution = t.linalg.inv(XtX_reg) @ X.T @ acts_centered
+
+        if all_polarities_zero:
+            t_g = solution.flatten()
+            t_p = None
+        else:
+            t_g = solution[0, :]
+            t_p = solution[1, :]
+
+        return t_g, t_p
+
+    def learn_polarity_direction(self, acts, polarities):
+        """Enhanced polarity direction with L2 regularization"""
+        polarities_copy = polarities.clone()
+        polarities_copy[polarities_copy == -1.0] = 0.0
+
+        # Use L2 regularization for better generalization
+        LR_polarity = LogisticRegression(
+            penalty='l2',
+            C=1.0,  # Inverse of regularization strength
+            fit_intercept=True,
+            max_iter=1000,
+            solver='lbfgs'
+        )
+        LR_polarity.fit(acts.numpy(), polarities_copy.numpy())
+        return LR_polarity.coef_
+
+    @classmethod
+    def from_data(cls, acts_centered, acts, labels, polarities):
+        probe = cls()
+
+        # Learn truth directions with enhanced method
+        probe.t_g, probe.t_p = probe.learn_truth_directions(acts_centered, labels, polarities)
+        probe.t_g = probe.t_g.numpy()
+        if probe.t_p is not None:
+            probe.t_p = probe.t_p.numpy()
+
+        # Learn polarity direction
+        probe.polarity_direc = probe.learn_polarity_direction(acts, polarities)
+
+        # Create enhanced feature set
+        acts_features = probe._create_features(acts)
+
+        # Fit scaler
+        acts_features_scaled = probe.scaler.fit_transform(acts_features)
+
+        # Create polynomial features for better non-linear patterns
+        acts_poly = probe.poly_features.fit_transform(acts_features_scaled)
+
+        # Use L2 regularized logistic regression
+        probe.LR = LogisticRegression(
+            penalty='l2',
+            C=0.5,  # Tuned for better generalization
+            fit_intercept=True,
+            max_iter=2000,
+            solver='lbfgs'
+        )
+        probe.LR.fit(acts_poly, labels.numpy())
+
+        return probe
+
+    def _create_features(self, acts):
+        """Create comprehensive feature set"""
+        features = []
+        acts_np = acts.numpy()
+
+        # Original projections
+        proj_t_g = acts_np @ self.t_g
+        features.append(proj_t_g[:, None])
+
+        # Polarity projection
+        proj_p = acts_np @ self.polarity_direc.T
+        features.append(proj_p)
+
+        # Add t_p projection if available
+        if self.t_p is not None:
+            proj_t_p = acts_np @ self.t_p
+            features.append(proj_t_p[:, None])
+
+            # Interaction features
+            features.append((proj_t_g * proj_t_p)[:, None])
+
+        # Squared projections for non-linearity
+        features.append(proj_t_g[:, None] ** 2)
+
+        # Norm of original activations (magnitude feature)
+        acts_norm = np.linalg.norm(acts_np, axis=1, keepdims=True)
+        features.append(acts_norm)
+
+        return np.concatenate(features, axis=1)
+
+    def pred(self, acts):
+        acts_features = self._create_features(acts)
+        acts_features_scaled = self.scaler.transform(acts_features)
+        acts_poly = self.poly_features.transform(acts_features_scaled)
+        return t.tensor(self.LR.predict(acts_poly))
+
+
+# ============= APPROACH 2: Ensemble TTPD =============
+class EnsembleTTPD():
+    """
+    Ensemble approach combining multiple classifiers for robustness
+    """
+
+    def __init__(self):
+        self.t_g = None
+        self.t_p = None
+        self.polarity_direc = None
+        self.classifiers = {}
+        self.weights = None
+        self.scaler = StandardScaler()
+
+    def learn_truth_directions(self, acts_centered, labels, polarities):
+        """Same as Enhanced TTPD"""
+        all_polarities_zero = t.allclose(polarities, t.tensor([0.0]), atol=1e-8)
+        labels_copy = t.where(labels == 0.0, t.tensor(-1.0), labels.float())
+
+        if all_polarities_zero:
+            X = labels_copy.reshape(-1, 1)
+        else:
+            X = t.column_stack([labels_copy, labels_copy * polarities])
+
+        lambda_reg = 0.01
+        XtX = X.T @ X
+        XtX_reg = XtX + lambda_reg * t.eye(XtX.shape[0])
+        solution = t.linalg.inv(XtX_reg) @ X.T @ acts_centered
+
+        if all_polarities_zero:
+            t_g = solution.flatten()
+            t_p = None
+        else:
+            t_g = solution[0, :]
+            t_p = solution[1, :]
+
+        return t_g, t_p
+
+    def learn_polarity_direction(self, acts, polarities):
+        polarities_copy = polarities.clone()
+        polarities_copy[polarities_copy == -1.0] = 0.0
+        LR_polarity = LogisticRegression(penalty='l2', C=1.0, fit_intercept=True)
+        LR_polarity.fit(acts.numpy(), polarities_copy.numpy())
+        return LR_polarity.coef_
+
+    @classmethod
+    def from_data(cls, acts_centered, acts, labels, polarities):
+        probe = cls()
+
+        # Learn directions
+        probe.t_g, probe.t_p = probe.learn_truth_directions(acts_centered, labels, polarities)
+        probe.t_g = probe.t_g.numpy()
+        if probe.t_p is not None:
+            probe.t_p = probe.t_p.numpy()
+
+        probe.polarity_direc = probe.learn_polarity_direction(acts, polarities)
+
+        # Create features
+        acts_features = probe._create_features(acts)
+        acts_features_scaled = probe.scaler.fit_transform(acts_features)
+        labels_np = labels.numpy()
+
+        # Train ensemble of classifiers
+        probe.classifiers['lr_l2'] = LogisticRegression(penalty='l2', C=0.5, max_iter=2000)
+        probe.classifiers['lr_l1'] = LogisticRegression(penalty='l1', C=1.0, solver='liblinear', max_iter=2000)
+        probe.classifiers['ridge'] = RidgeClassifier(alpha=1.0)
+        probe.classifiers['rf'] = RandomForestClassifier(n_estimators=50, max_depth=3, random_state=42)
+        probe.classifiers['svm'] = SVC(kernel='rbf', C=1.0, gamma='scale', probability=True)
+
+        # Train all classifiers
+        for name, clf in probe.classifiers.items():
+            clf.fit(acts_features_scaled, labels_np)
+
+        # Simple equal weighting (could be optimized via validation set)
+        probe.weights = np.ones(len(probe.classifiers)) / len(probe.classifiers)
+
+        return probe
+
+    def _create_features(self, acts):
+        """Create feature set for ensemble"""
+        features = []
+        acts_np = acts.numpy()
+
+        # Basic projections
+        proj_t_g = acts_np @ self.t_g
+        features.append(proj_t_g[:, None])
+
+        proj_p = acts_np @ self.polarity_direc.T
+        features.append(proj_p)
+
+        if self.t_p is not None:
+            proj_t_p = acts_np @ self.t_p
+            features.append(proj_t_p[:, None])
+
+        return np.concatenate(features, axis=1)
+
+    def pred(self, acts):
+        acts_features = self._create_features(acts)
+        acts_features_scaled = self.scaler.transform(acts_features)
+
+        # Ensemble prediction
+        predictions = []
+        for clf in self.classifiers.values():
+            if hasattr(clf, 'predict_proba'):
+                pred_proba = clf.predict_proba(acts_features_scaled)[:, 1]
+            else:
+                # For classifiers without predict_proba
+                pred = clf.predict(acts_features_scaled)
+                pred_proba = pred
+            predictions.append(pred_proba)
+
+        # Weighted average
+        ensemble_pred = np.average(predictions, weights=self.weights, axis=0)
+        return t.tensor((ensemble_pred > 0.5).astype(float))
+
+# ============= APPROACH 3: Adaptive TTPD with Cross-Validation =============
+class AdaptiveTTPD():
+    """
+    Adaptive approach that selects best hyperparameters via internal cross-validation
+    """
+
+    def __init__(self):
+        self.t_g = None
+        self.t_p = None
+        self.polarity_direc = None
+        self.best_model = None
+        self.best_params = None
+        self.scaler = StandardScaler()
+        self.use_poly = False
+        self.poly_features = None
+
+    def learn_truth_directions_adaptive(self, acts_centered, labels, polarities):
+        """Adaptive truth direction learning with multiple regularization options"""
+        all_polarities_zero = t.allclose(polarities, t.tensor([0.0]), atol=1e-8)
+        labels_copy = t.where(labels == 0.0, t.tensor(-1.0), labels.float())
+
+        best_solution = None
+        best_loss = float('inf')
+
+        # Try different regularization strengths
+        for lambda_reg in [0.001, 0.01, 0.1]:
+            if all_polarities_zero:
+                X = labels_copy.reshape(-1, 1)
+            else:
+                X = t.column_stack([labels_copy, labels_copy * polarities])
+
+            XtX = X.T @ X
+            XtX_reg = XtX + lambda_reg * t.eye(XtX.shape[0])
+
+            try:
+                solution = t.linalg.inv(XtX_reg) @ X.T @ acts_centered
+
+                # Compute reconstruction error
+                if all_polarities_zero:
+                    reconstruction = X @ solution
+                else:
+                    reconstruction = X @ solution
+
+                loss = t.mean((acts_centered - reconstruction) ** 2).item()
+
+                if loss < best_loss:
+                    best_loss = loss
+                    best_solution = solution
+            except:
+                continue
+
+        if all_polarities_zero:
+            t_g = best_solution.flatten()
+            t_p = None
+        else:
+            t_g = best_solution[0, :]
+            t_p = best_solution[1, :]
+
+        return t_g, t_p
+
+    @classmethod
+    def from_data(cls, acts_centered, acts, labels, polarities):
+        probe = cls()
+
+        # Learn adaptive truth directions
+        probe.t_g, probe.t_p = probe.learn_truth_directions_adaptive(acts_centered, labels, polarities)
+        probe.t_g = probe.t_g.numpy()
+        if probe.t_p is not None:
+            probe.t_p = probe.t_p.numpy()
+
+        # Learn polarity direction
+        polarities_copy = polarities.clone()
+        polarities_copy[polarities_copy == -1.0] = 0.0
+
+        # Grid search for best polarity classifier
+        best_score = -float('inf')
+        for C in [0.1, 0.5, 1.0, 2.0]:
+            lr = LogisticRegression(penalty='l2', C=C, fit_intercept=True, max_iter=1000)
+            lr.fit(acts.numpy(), polarities_copy.numpy())
+            score = lr.score(acts.numpy(), polarities_copy.numpy())
+            if score > best_score:
+                best_score = score
+                probe.polarity_direc = lr.coef_
+
+        # Create features and determine if polynomial features help
+        acts_features = probe._create_base_features(acts)
+        acts_features_scaled = probe.scaler.fit_transform(acts_features)
+        labels_np = labels.numpy()
+
+        # Test with and without polynomial features
+        best_score = -float('inf')
+
+        # Test different configurations
+        configs = [
+            {'use_poly': False, 'C': 0.1},
+            {'use_poly': False, 'C': 0.5},
+            {'use_poly': False, 'C': 1.0},
+            {'use_poly': True, 'C': 0.1},
+            {'use_poly': True, 'C': 0.5},
+        ]
+
+        for config in configs:
+            if config['use_poly']:
+                poly = PolynomialFeatures(degree=2, include_bias=False)
+                features = poly.fit_transform(acts_features_scaled)
+            else:
+                features = acts_features_scaled
+                poly = None
+
+            lr = LogisticRegression(penalty='l2', C=config['C'], max_iter=2000)
+            lr.fit(features, labels_np)
+            score = lr.score(features, labels_np)
+
+            if score > best_score:
+                best_score = score
+                probe.best_model = lr
+                probe.use_poly = config['use_poly']
+                probe.poly_features = poly
+                probe.best_params = config
+
+        return probe
+
+    def _create_base_features(self, acts):
+        """Create base feature set"""
+        features = []
+        acts_np = acts.numpy()
+
+        # Core projections
+        proj_t_g = acts_np @ self.t_g
+        features.append(proj_t_g[:, None])
+
+        proj_p = acts_np @ self.polarity_direc.T
+        features.append(proj_p)
+
+        if self.t_p is not None:
+            proj_t_p = acts_np @ self.t_p
+            features.append(proj_t_p[:, None])
+
+            # Cross terms
+            features.append((proj_t_g * proj_t_p)[:, None])
+
+        # Add normalized versions
+        proj_t_g_norm = proj_t_g / (np.linalg.norm(self.t_g) + 1e-8)
+        features.append(proj_t_g_norm[:, None])
+
+        return np.concatenate(features, axis=1)
+
+    def pred(self, acts):
+        acts_features = self._create_base_features(acts)
+        acts_features_scaled = self.scaler.transform(acts_features)
+
+        if self.use_poly:
+            acts_features_scaled = self.poly_features.transform(acts_features_scaled)
+
+        return t.tensor(self.best_model.predict(acts_features_scaled))
+
+class ContrastiveTTPD():
+    """
+    Uses contrastive learning principles to learn better truth directions
+    """
+
+    def __init__(self):
+        self.t_g = None
+        self.t_p = None
+        self.t_contrast = None
+        self.polarity_direc = None
+        self.LR = None
+        self.scaler = StandardScaler()
+
+    def learn_contrastive_directions(self, acts, labels):
+        """Learn directions that maximize separation between truth and lie"""
+        acts_np = acts.numpy()
+        labels_np = labels.numpy()
+
+        # Separate true and false statements
+        true_acts = acts_np[labels_np == 1]
+        false_acts = acts_np[labels_np == 0]
+
+        # Compute means
+        true_mean = np.mean(true_acts, axis=0)
+        false_mean = np.mean(false_acts, axis=0)
+
+        # Contrastive direction (difference of means)
+        contrast_dir = true_mean - false_mean
+        contrast_dir = contrast_dir / (np.linalg.norm(contrast_dir) + 1e-8)
+
+        # Within-class scatter
+        S_w = np.zeros((acts_np.shape[1], acts_np.shape[1]))
+        for acts_class in [true_acts, false_acts]:
+            class_mean = np.mean(acts_class, axis=0)
+            for act in acts_class:
+                diff = (act - class_mean).reshape(-1, 1)
+                S_w += diff @ diff.T
+
+        # Between-class scatter
+        diff = (true_mean - false_mean).reshape(-1, 1)
+        S_b = diff @ diff.T
+
+        # LDA-style direction (requires regularization for stability)
+        S_w_reg = S_w + 0.01 * np.eye(S_w.shape[0])
+        try:
+            eigenvalues, eigenvectors = np.linalg.eig(np.linalg.inv(S_w_reg) @ S_b)
+            lda_dir = eigenvectors[:, np.argmax(eigenvalues)].real
+            lda_dir = lda_dir / (np.linalg.norm(lda_dir) + 1e-8)
+        except:
+            lda_dir = contrast_dir
+
+        return contrast_dir, lda_dir
+
+    @classmethod
+    def from_data(cls, acts_centered, acts, labels, polarities):
+        probe = cls()
+
+        # Original truth directions
+        all_polarities_zero = t.allclose(polarities, t.tensor([0.0]), atol=1e-8)
+        labels_copy = t.where(labels == 0.0, t.tensor(-1.0), labels.float())
+
+        if all_polarities_zero:
+            X = labels_copy.reshape(-1, 1)
+        else:
+            X = t.column_stack([labels_copy, labels_copy * polarities])
+
+        lambda_reg = 0.01
+        XtX = X.T @ X
+        XtX_reg = XtX + lambda_reg * t.eye(XtX.shape[0])
+        solution = t.linalg.inv(XtX_reg) @ X.T @ acts_centered
+
+        if all_polarities_zero:
+            probe.t_g = solution.flatten().numpy()
+            probe.t_p = None
+        else:
+            probe.t_g = solution[0, :].numpy()
+            probe.t_p = solution[1, :].numpy()
+
+        # Learn contrastive directions
+        contrast_dir, lda_dir = probe.learn_contrastive_directions(acts, labels)
+        probe.t_contrast = lda_dir
+
+        # Polarity direction
+        polarities_copy = polarities.clone()
+        polarities_copy[polarities_copy == -1.0] = 0.0
+        LR_polarity = LogisticRegression(penalty='l2', C=1.0, fit_intercept=True)
+        LR_polarity.fit(acts.numpy(), polarities_copy.numpy())
+        probe.polarity_direc = LR_polarity.coef_
+
+        # Create enhanced features with contrastive directions
+        acts_features = probe._create_contrastive_features(acts)
+        acts_features_scaled = probe.scaler.fit_transform(acts_features)
+
+        # Train classifier with optimal regularization
+        probe.LR = LogisticRegression(
+            penalty='elasticnet',
+            solver='saga',
+            l1_ratio=0.5,
+            C=0.5,
+            max_iter=3000,
+            fit_intercept=True
+        )
+        probe.LR.fit(acts_features_scaled, labels.numpy())
+
+        return probe
+
+    def _create_contrastive_features(self, acts):
+        """Create features including contrastive directions"""
+        features = []
+        acts_np = acts.numpy()
+
+        # Original projections
+        proj_t_g = acts_np @ self.t_g
+        features.append(proj_t_g[:, None])
+
+        # Contrastive projection
+        proj_contrast = acts_np @ self.t_contrast
+        features.append(proj_contrast[:, None])
+
+        # Polarity projection
+        proj_p = acts_np @ self.polarity_direc.T
+        features.append(proj_p)
+
+        if self.t_p is not None:
+            proj_t_p = acts_np @ self.t_p
+            features.append(proj_t_p[:, None])
+
+        # Interaction features
+        features.append((proj_t_g * proj_contrast)[:, None])
+
+        # Distance-based features
+        # Distance to truth direction
+        dist_truth = np.abs(proj_t_g)
+        features.append(dist_truth[:, None])
+
+        return np.concatenate(features, axis=1)
+
+    def pred(self, acts):
+        acts_features = self._create_contrastive_features(acts)
+        acts_features_scaled = self.scaler.transform(acts_features)
+        return t.tensor(self.LR.predict(acts_features_scaled))
 
 def ccs_loss(probe, acts, neg_acts):
     p_pos = probe(acts)
@@ -758,9 +1302,13 @@ class MMProbe(t.nn.Module):
 
 # (title, object)
 TTPD_TYPES = [
-        # ("TTPD", TTPD),
+        ("TTPD", TTPD),
+        ("TTPDEnh", EnhancedTTPD),
+        ("TTPDEns", EnsembleTTPD),
+        ("TTPDAdapt", AdaptiveTTPD),
+        ("TTPDCont", ContrastiveTTPD)
         #("TTPD4d", TTPD4d),
-        ("TTPD4dHyper", TTPD4dEnh),
+       # ("TTPD4dHyper", TTPD4dEnh),
         #("TTPD2d", TTPD2d),
     #  ("TTPD3dTp", TTPD3dTp)
             ]
@@ -768,7 +1316,6 @@ TTPD_TYPES = [
 # To speed up testing, for full report use all probes
 # ALL_PROBES = TTPD_TYPES + [("LRProbe", LRProbe), ("CCSProbe", CCSProbe), ("MMProbe", MMProbe)]
 ALL_PROBES = TTPD_TYPES
-
 
 
 if __name__ == '__main__':

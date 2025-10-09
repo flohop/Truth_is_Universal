@@ -106,7 +106,7 @@ def find_best_lr_params(X, y, param_grid=None, n_iter=15, random_state=42, scori
         ]
 
     pipeline = Pipeline([
-        ('scaler', StandardScaler()),
+       # ('scaler', StandardScaler()),
         ('lr', LogisticRegression(fit_intercept=True, max_iter=2000))
     ])
 
@@ -254,7 +254,9 @@ def learn_polarity_direction_hyper(acts, polarities, best_params=None, scoring='
 
     # Build pipeline and fit (pipeline includes scaler)
     lr = LogisticRegression(fit_intercept=True, **lr_params)
-    pipeline = Pipeline([("scaler", StandardScaler()), ("lr", lr)])
+    pipeline = Pipeline([
+        # ("scaler", StandardScaler()),
+         ("lr", lr)])
 
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=ConvergenceWarning)
@@ -481,7 +483,7 @@ class TTPD4dEnh():
             polarity_params = TTPD4dEnh.polarity_params_cache[cache_key]
         else:
             print("Training Polarity params")
-            polarity_params = find_best_lr_params(acts, polarities, n_iter=10, random_state=42, scoring=scoring)
+            polarity_params = find_best_lr_params(acts, polarities, n_iter=30, random_state=42, scoring=scoring)
             if probe.use_cache:
                 TTPD4dEnh.polarity_params_cache[cache_key] = polarity_params
             print("Found: ", polarity_params)
@@ -497,14 +499,16 @@ class TTPD4dEnh():
             ttpd_params = TTPD4dEnh.ttpd_params_cache[ttpd_cache_key]
         else:
             print("Training TTPD params")
-            ttpd_params = find_best_lr_params(acts_4d, labels, n_iter=12, random_state=123, scoring=scoring)
+            ttpd_params = find_best_lr_params(acts_4d, labels, n_iter=30, random_state=123, scoring=scoring)
             if probe.use_cache:
                 TTPD4dEnh.ttpd_params_cache[ttpd_cache_key] = ttpd_params
             print("Found: ", ttpd_params)
 
         # ---- build final pipeline (keeps scaler for prediction) ----
         lr = LogisticRegression(fit_intercept=True, **ttpd_params)
-        pipeline = Pipeline([("scaler", StandardScaler()), ("lr", lr)])
+        pipeline = Pipeline([
+            # ("scaler", StandardScaler()),
+            ("lr", lr)])
 
         # fit with convergence warnings suppressed; if convergence occurs, try increasing max_iter
         acts4_np = acts_4d if isinstance(acts_4d, np.ndarray) else np.asarray(acts_4d)
@@ -516,7 +520,9 @@ class TTPD4dEnh():
         except Exception as e:
             # If solver struggles, try increasing max_iter and refit (robust fallback)
             lr.set_params(max_iter=5000)
-            pipeline = Pipeline([("scaler", StandardScaler()), ("lr", lr)])
+            pipeline = Pipeline([
+                # ("scaler", StandardScaler()),
+                ("lr", lr)])
             pipeline.fit(acts4_np, labels_np)
 
         probe.pipeline = pipeline
@@ -550,8 +556,8 @@ class TTPD4dEnh():
             p2 = proj_p ** 2
             tp2 = proj_t_p ** 2
             int2 = interaction ** 2
-            # acts_4d = np.column_stack([proj_t_g, proj_t_p, proj_p, interaction, p2, tp2, int2])
-            acts_4d = np.column_stack([proj_t_g, p2, tp2, int2])
+            acts_4d = np.column_stack([proj_t_g[:, None], proj_p])
+            # acts_4d = np.column_stack([proj_t_g, p2, tp2, int2])
 
         else:
             acts_4d = np.column_stack([proj_t_g, proj_p])

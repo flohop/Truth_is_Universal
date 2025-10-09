@@ -15,48 +15,43 @@ from ray import tune
 from ray.tune.tune import BasicVariantGenerator
 
 
-def train_ttpd_test(config, acts_centered, acts, labels, polarities):
-    from copy import deepcopy
-
-    # Split into train/validation
-    acts_train, acts_val, labels_train, labels_val = train_test_split(
-        acts, labels.numpy(), test_size=0.2, random_state=42
-    )
-
+def train_ttpd_test(config, acts_centered_train, acts_train, labels_train, polarities_train,
+                    acts_centered_val, acts_val, labels_val, polarities_val):
     probe = TTPDTest()
 
-    # Learn truth directions
-    probe.t_g, probe.t_p = learn_truth_directions(acts_centered, labels, polarities)
+    # Learn truth directions on training set
+    probe.t_g, probe.t_p = learn_truth_directions(acts_centered_train, labels_train, polarities_train)
     probe.t_g = probe.t_g.numpy()
     probe.t_p = probe.t_p.numpy()
 
-    # Learn polarity direction
-    probe.polarity_direc = learn_polarity_direction(acts, polarities)
+    # Learn polarity direction on training set
+    probe.polarity_direc = learn_polarity_direction(acts_train, polarities_train)
 
-    # Project activations
+    # Project activations for training
     acts_2d_train = probe._project_acts(acts_train)
     acts_2d_val = probe._project_acts(acts_val)
 
-    # Build pipeline with hyperparameters from config
-    probe.LR = Pipeline([
-        ('scaler', StandardScaler()),
-        ('poly', PolynomialFeatures(degree=config['degree'], include_bias=True)),
-        ('lr', LogisticRegression(
-            penalty='l2',
-            C=config['C'],
-            fit_intercept=config['fit_intercept'],
-            solver=config['solver'],
-            max_iter=2000
-        ))
-    ])
+    # Build LR pipeline from config
+    steps = []
+    if config['use_scaler']:
+        steps.append(('scaler', StandardScaler()))
+    steps.append(('poly', PolynomialFeatures(degree=config['degree'], include_bias=config['include_bias'])))
+    steps.append(('lr', LogisticRegression(
+        penalty='l2',
+        C=config['C'],
+        fit_intercept=config['fit_intercept'],
+        solver=config['solver'],
+        max_iter=2000
+    )))
 
-    # Fit and evaluate
-    probe.LR.fit(acts_2d_train, labels_train)
-    preds = probe.LR.predict(acts_2d_val)
-    acc = accuracy_score(labels_val, preds)
+    probe.LR = Pipeline(steps)
+    probe.LR.fit(acts_2d_train, labels_train.numpy())
 
-    # Report to Ray Tune
-    tune.report({"accuracy": acc})
+    # Evaluate on validation set
+    preds_val = probe.LR.predict(acts_2d_val)
+    acc_val = (preds_val == labels_val.numpy()).mean()
+
+    tune.report({"accuracy": acc_val})
 
 
 def learn_truth_directions(acts_centered, labels, polarities):
@@ -301,24 +296,30 @@ if __name__ == '__main__':
 
     device = 'mps' if torch.mps.is_available() else 'cpu'  # gpu speeds up CCS training a fair bit but is not required
 
+    val_sets = ["cities_conj", "cities_disj", "sp_en_trans_conj", "sp_en_trans_disj",
+                "inventors_conj", "inventors_disj", "animal_class_conj", "animal_class_disj",
+                "element_symb_conj", "element_symb_disj", "facts_conj", "facts_disj",
+                "common_claim_true_false", "counterfact_true_false"]
+
+
+    val_set_sizes = dataset_sizes(val_sets)
+
     # define datasets used for training
     train_sets = ["cities", "neg_cities", "sp_en_trans", "neg_sp_en_trans", "inventors", "neg_inventors",
                   "animal_class",
                   "neg_animal_class", "element_symb", "neg_element_symb", "facts", "neg_facts"]
     train_set_sizes = dataset_sizes(train_sets)
 
-    val_sets = ["cities_conj", "cities_disj", "sp_en_trans_conj", "sp_en_trans_disj",
-                "inventors_conj", "inventors_disj", "animal_class_conj", "animal_class_disj",
-                "element_symb_conj", "element_symb_disj", "facts_conj", "facts_disj",
-                "common_claim_true_false", "counterfact_true_false"]
+
 
     # load training data
-    acts_centered, acts, labels, polarities = collect_training_data(train_sets, train_set_sizes, model_family,
-                                                                    model_size,
-                                                                    model_type, layer)
+    acts_centered_train, acts_train, labels_train, polarities_train = collect_training_data(train_sets, train_set_sizes,
+                                                                                            model_family, model_size,
+                                                                                            model_type, layer)
 
-    # TTPDTest.from_data(acts_centered, acts, labels, polarities)
-
+    acts_centered_val, acts_val, labels_val, polarities_val = collect_training_data(val_sets, val_set_sizes,
+                                                                                    model_family, model_size,
+                                                                                    model_type, layer)
 
     ray.init(ignore_reinit_error=True)
 
@@ -367,14 +368,22 @@ if __name__ == '__main__':
 
     # Run Ray Tune
     analysis = tune.run(
-        tune.with_parameters(train_ttpd_test, acts_centered=acts_centered, acts=acts, labels=labels,
-                             polarities=polarities),
+        tune.with_parameters(
+            train_ttpd_test,
+            acts_centered_train=acts_centered_train,
+            acts_train=acts_train,
+            labels_train=labels_train,
+            polarities_train=polarities_train,
+            acts_centered_val=acts_centered_val,
+            acts_val=acts_val,
+            labels_val=labels_val,
+            polarities_val=polarities_val
+        ),
         resources_per_trial={"cpu": 2},
         metric="accuracy",
         mode="max",
         num_samples=20,
-        config=search_space,
-        search_alg=BasicVariantGenerator()
+        config=search_space
     )
 
     print("Best config found: ", analysis.best_config)

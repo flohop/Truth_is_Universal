@@ -4,10 +4,14 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.linear_model import LogisticRegression, LogisticRegressionCV, RidgeClassifier
-from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
+from sklearn.metrics import accuracy_score, roc_auc_score
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
 import warnings
+import numpy as np
+from sklearn.metrics import accuracy_score, roc_auc_score
+import torch
 
 from sklearn.svm import SVC
 
@@ -1300,13 +1304,78 @@ class MMProbe(t.nn.Module):
 
         return probe
 
+
+
+def evaluate_polarity_transfer(acts_train, pol_train, acts_test, pol_test, verbose=True):
+    """
+    Learn polarity direction on one dataset (acts_train)
+    and evaluate on another (acts_test).
+    """
+    acts_train_t = (
+        acts_train.detach().clone().float()
+        if isinstance(acts_train, torch.Tensor)
+        else torch.tensor(acts_train, dtype=torch.float32)
+    )
+    pol_train_t = (
+        pol_train.detach().clone().float()
+        if isinstance(pol_train, torch.Tensor)
+        else torch.tensor(pol_train, dtype=torch.float32)
+    )
+
+    # --- learn polarity direction ---
+    polarity_direc = learn_polarity_direction(
+       acts_train_t, pol_train_t
+    )
+
+    # Normalize
+    w = polarity_direc.reshape(-1)
+    w = w / np.linalg.norm(w)
+
+    # --- compute polarity scores on test set ---
+    # Ensure torch → numpy
+    if isinstance(acts_test, torch.Tensor):
+        acts_test = acts_test.detach().cpu().numpy()
+    scores = acts_test @ w
+
+    # convert polarities {-1, +1} → {0, 1}
+    y_test = np.where(pol_test == 1, 1, 0)
+
+    # classify by sign
+    preds = (scores > 0).astype(int)
+
+    acc = accuracy_score(y_test, preds)
+    try:
+        auc = roc_auc_score(y_test, scores)
+    except ValueError:
+        auc = float('nan')  # if only one class is present
+
+    mean_affirmed = scores[y_test == 1].mean() if np.any(y_test == 1) else float('nan')
+    mean_negated = scores[y_test == 0].mean() if np.any(y_test == 0) else float('nan')
+
+    if verbose:
+        print("Polarity generalization results:")
+        print(f"  Accuracy: {acc:.3f}")
+        print(f"  AUC:      {auc:.3f}")
+        print(f"  Mean affirmed score: {mean_affirmed:.3f}")
+        print(f"  Mean negated score:  {mean_negated:.3f}")
+
+    return {
+        "accuracy": acc,
+        "auc": auc,
+        "mean_affirmed": mean_affirmed,
+        "mean_negated": mean_negated,
+        "direction": w,
+        "scores": scores
+    }
+
+
 # (title, object)
 TTPD_TYPES = [
         ("TTPD", TTPD),
-        ("TTPDEnh", EnhancedTTPD),
-        ("TTPDEns", EnsembleTTPD),
-        ("TTPDAdapt", AdaptiveTTPD),
-        ("TTPDCont", ContrastiveTTPD)
+        #("TTPDEnh", EnhancedTTPD),
+        #("TTPDEns", EnsembleTTPD),
+        #("TTPDAdapt", AdaptiveTTPD),
+        #("TTPDCont", ContrastiveTTPD)
         #("TTPD4d", TTPD4d),
        # ("TTPD4dHyper", TTPD4dEnh),
         #("TTPD2d", TTPD2d),
@@ -1330,17 +1399,33 @@ if __name__ == '__main__':
     train_sets = ["cities", "neg_cities", "sp_en_trans", "neg_sp_en_trans", "inventors", "neg_inventors",
                   "animal_class",
                   "neg_animal_class", "element_symb", "neg_element_symb", "facts", "neg_facts"]
+
+    val_sets = ["cities_conj", "cities_disj", "sp_en_trans_conj", "sp_en_trans_disj",
+                "inventors_conj", "inventors_disj", "animal_class_conj", "animal_class_disj",
+                "element_symb_conj", "element_symb_disj", "facts_conj", "facts_disj",
+                "common_claim_true_false", "counterfact_true_false"]
+
+
     # get size of each training dataset to include an equal number of statements from each topic in training data
     train_set_sizes = dataset_sizes(train_sets)
 
     cv_train_sets = np.array(train_sets)
+    cv_test_sets = np.array(val_sets)
     acts_centered, acts, labels, polarities = collect_training_data(cv_train_sets, train_set_sizes, model_family,
                                                                     model_size, model_type, layer)
+
+    # Test set
+    t_acts_centered, t_acts, t_labels, t_polarities = collect_training_data(cv_test_sets, dataset_sizes(val_sets), model_family, model_size, model_type, layer)
 
     # Make sure no code errors
     for (name, ttpd) in TTPD_TYPES:
         print(name)
         probe = ttpd.from_data(acts_centered, acts, labels, polarities)
 
-        predictions = probe.pred(acts)
-        print(predictions)
+        #directions = learn_polarity_direction(acts, polarities)
+        evaluate_polarity_transfer(acts, polarities, t_acts, t_polarities)
+
+        # predictions = probe.pred(acts)
+
+    # Goal, understand p better
+

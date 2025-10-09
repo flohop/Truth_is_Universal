@@ -26,17 +26,25 @@ def make_interaction_features(acts_2d, interaction_names):
     features = []
     for name in interaction_names:
         if '+' in name:
-            a, b = name.split('+')
-            features.append(feature_dict[a] + feature_dict[b])
+            parts = name.split('+')
+            val = sum(feature_dict[p] for p in parts)
+            features.append(val)
         elif '-' in name:
-            a, b = name.split('-')
-            features.append(feature_dict[a] - feature_dict[b])
+            parts = name.split('-')
+            val = feature_dict[parts[0]]
+            for p in parts[1:]:
+                val -= feature_dict[p]
+            features.append(val)
         elif '*' in name:
-            a, b = name.split('*')
-            features.append(feature_dict[a] * feature_dict[b])
+            parts = name.split('*')
+            val = feature_dict[parts[0]]
+            for p in parts[1:]:
+                val *= feature_dict[p]
+            features.append(val)
         else:
             features.append(feature_dict[name])
     return np.concatenate(features, axis=1)
+
 
 # -----------------------------------------------------------
 # TTPDTest Probe

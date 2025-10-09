@@ -76,7 +76,6 @@ def measure_polarity_direction_lr(train_acts, train_polarities, valid_acts, vali
     num_diff = np.sum(~np.isclose(pred, valid_polarities))
     return 1 -  num_diff / len(valid_acts)
 
-# Train on affirmative data only for testin
 class TTPDAffirm:
     # Force LR to only use truth and polarity dimensions
     def __init__(self):
@@ -118,10 +117,11 @@ class TTPDAffirm:
         return t.tensor(self.LR.predict(acts_2d))
 
     def _project_acts(self, acts):
-        proj_t_g = acts.numpy() @ self.t_g  # project onto general truth direction
-        proj_t_p = acts.numpy() @ self.t_p
-        interaction = proj_t_g[:, None] - proj_t_p[:, None]
-        acts_2d = np.concatenate((proj_t_g[:, None], proj_t_p[:, None], interaction), axis=1)
+        proj_t_g = (acts.numpy() @ self.t_g)  # project onto general truth direction
+        proj_p = (acts.numpy() @ self.polarity_direc.T)
+        proj_t_p = (acts.numpy() @ self.t_p)[:, None] * proj_p
+        interaction = (proj_t_g[:, None] + proj_t_p)
+        acts_2d = np.concatenate((proj_t_g[:, None], proj_t_p, interaction, proj_p), axis=1)
         return acts_2d
 
 

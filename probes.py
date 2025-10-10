@@ -251,7 +251,7 @@ def train_ttpd_with_cv(config, data_loader_fn, all_train_sets,
     mean_accuracy = np.mean(accuracies)
     std_accuracy = np.std(accuracies)
 
-    train.report({
+    tune.report({
         "accuracy": mean_accuracy,
         "accuracy_std": std_accuracy,
         "loss": 1 - mean_accuracy

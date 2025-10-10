@@ -500,23 +500,22 @@ def analyze_results(analysis):
     return best_config, df
 
 
-def run_ray():
+def run_ray(train_sets, val_sets):
     """
     Example of how to use the optimization pipeline
     """
 
-    # Your existing setup
-    train_sets = ["cities", "neg_cities", "sp_en_trans", "neg_sp_en_trans", "inventors", "neg_inventors", "animal_class",
-                  "neg_animal_class", "element_symb", "neg_element_symb", "facts", "neg_facts"]
+    # train_sets = ["cities", "neg_cities", "sp_en_trans", "neg_sp_en_trans", "inventors", "neg_inventors", "animal_class",
+    #               "neg_animal_class", "element_symb", "neg_element_symb", "facts", "neg_facts"]
 
     # val_sets = ["cities_conj", "cities_disj", "sp_en_trans_conj", "sp_en_trans_disj",
     #             "inventors_conj", "inventors_disj", "animal_class_conj", "animal_class_disj",
     #             "element_symb_conj", "element_symb_disj", "facts_conj", "facts_disj",
     #             "common_claim_true_false", "counterfact_true_false"]
-
-    val_sets = ["cities_de", "neg_cities_de", "sp_en_trans_de", "neg_sp_en_trans_de", "inventors_de",
-                "neg_inventors_de", "animal_class_de",
-                "neg_animal_class_de", "element_symb_de", "neg_element_symb_de", "facts_de", "neg_facts_de"]
+    #
+    # val_sets = ["cities_de", "neg_cities_de", "sp_en_trans_de", "neg_sp_en_trans_de", "inventors_de",
+    #             "neg_inventors_de", "animal_class_de",
+    #             "neg_animal_class_de", "element_symb_de", "neg_element_symb_de", "facts_de", "neg_facts_de"]
 
     # Model specifications
     model_family = 'Llama3'

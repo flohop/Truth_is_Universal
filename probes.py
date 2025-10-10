@@ -1,7 +1,6 @@
 import os
 
-import ray
-from ray import train, tune
+from ray import  tune
 from ray.tune.schedulers import ASHAScheduler
 from ray.tune.search.optuna import OptunaSearch
 from sklearn.linear_model import LogisticRegression
@@ -68,6 +67,7 @@ class TTPDTestConfigurable():
         self.LR = None
         self.LR_norm = None
         self.config = None
+        self.scaler = None
 
     @staticmethod
     def from_data(acts_centered, acts, labels, polarities, config=None):
@@ -80,6 +80,7 @@ class TTPDTestConfigurable():
                 - polarity_penalty: Penalty type for polarity LR
                 - polarity_solver: Solver for polarity LR
                 - polarity_max_iter: Max iterations for polarity LR
+                - use_scaler: True/False
                 - features: List of features to use, given as a list e.g. ["a", "b", "c"]
 
                 - final_penalty: Penalty for final LR (None or 'l2')
@@ -108,30 +109,30 @@ class TTPDTestConfigurable():
             max_iter=config.get('polarity_max_iter', 2000)
         )
 
+
         # Project acts and fit final LR with configurable params
         acts_2d = probe._project_acts(acts, used_features=config.get("features", []))
 
-        # Normalized LR for visualization
-        scaler = StandardScaler()
-        acts_2d_scaled = scaler.fit_transform(acts_2d)
-        probe.LR_norm = LogisticRegression(penalty=None, fit_intercept=True)
-        probe.LR_norm.fit(acts_2d_scaled, labels.numpy())
+        if config.get('use_scaler', True):
+            probe.scaler = StandardScaler()
+            acts_2d = probe.scaler.fit_transform(acts_2d)
+
 
         final_penalty = config.get('final_penalty', None)
         if final_penalty is None:
             probe.LR = LogisticRegression(
                 penalty=None,
                 fit_intercept=True,
-                #solver=config.get('final_solver', 'lbfgs'),
-                #max_iter=config.get('final_max_iter', 1000)
+                solver=config.get('final_solver', 'lbfgs'),
+                max_iter=config.get('final_max_iter', 1000)
             )
         else:
             probe.LR = LogisticRegression(
                 penalty=final_penalty,
-                #C=config.get('final_C', 1.0),
+                C=config.get('final_C', 1.0),
                 fit_intercept=True,
-                #solver=config.get('final_solver', 'lbfgs'),
-                #max_iter=config.get('final_max_iter', 1000)
+                solver=config.get('final_solver', 'lbfgs'),
+                max_iter=config.get('final_max_iter', 1000)
             )
 
         probe.LR.fit(acts_2d, labels.numpy())
@@ -139,6 +140,8 @@ class TTPDTestConfigurable():
 
     def pred(self, acts):
         acts_2d = self._project_acts(acts, self.config["features"])
+        if self.config['use_scaler']:
+            acts_2d = self.scaler.fit_transform(acts_2d)
         return t.tensor(self.LR.predict(acts_2d))
 
     def _project_acts(self, acts, used_features):
@@ -321,43 +324,46 @@ def get_search_space():
         "final_max_iter": tune.choice([500, 1000, 2000]),
         "final_l1_ratio": tune.uniform(0.0, 1.0),
 
+        "use_scaler": tune.choice([True, False]),
+
         # feature sets
         "features": tune.choice([
             # 2 pairs
-            ["proj_t_g", "proj_p"],
-            ["proj_t_g", "exp2"],
-            ["proj_t_g", "proj_t_p"],
-            ["proj_t_g", "proj_p"],
-            ["proj_t_p", "proj_p"],
-            ["proj_t_g", "proj_t_p_inter"],
-            ["proj_t_g", "inter1"],
-            ["proj_t_g", "inter2"],
-            ["proj_t_g", "exp1"],
-            ["proj_t_g", "inter3"],
+            # ["proj_t_g", "proj_p"],
+            # ["proj_t_g", "exp2"],
+            # ["proj_t_g", "proj_t_p"],
+            # ["proj_t_g", "proj_p"],
+            # ["proj_t_p", "proj_p"],
+            # ["proj_t_g", "proj_t_p_inter"],
+            # ["proj_t_g", "inter1"],
+            # ["proj_t_g", "inter2"],
+            # ["proj_t_g", "exp1"],
+            # ["proj_t_g", "inter3"],
 
             # 3
-            ["proj_t_g", "proj_t_p", "proj_p"],
-            ["exp1", "exp2", "exp3"],
-            ["proj_t_g", "exp2", "exp3"],
-            ["exp1", "exp2", "proj_t_p_inter"],
-            ["exp1", "proj_t_p", "exp2"],
-            ["proj_t_g", "exp2", "exp3", "inter1"],
-            ["proj_t_p", "inter1", "inter2"],
+            ["proj_t_g", "proj_p", "proj_t_p_inter"]
+            # ["proj_t_g", "proj_t_p", "proj_p"],
+            # ["exp1", "exp2", "exp3"],
+            # ["proj_t_g", "exp2", "exp3"],
+            # ["exp1", "exp2", "proj_t_p_inter"],
+            # ["exp1", "proj_t_p", "exp2"],
+            # ["proj_t_g", "exp2", "exp3", "inter1"],
+            # ["proj_t_p", "inter1", "inter2"],
 
             # 4
             #["proj_t_g", "inter1", "inter2", "inter3"],
-            ["exp1", "exp2", "exp3", "inter1"],
-            ["exp1", "proj_t_p", "proj_p", "inter2"],
-            ["proj_t_g", "exp2", "proj_p", "inter3"],
-            ["proj_t_g", "proj_t_p", "exp3", "inter4"],
-            ["proj_p", "inter4", "inter5", "inter6"],
+            # ["exp1", "exp2", "exp3", "inter1"],
+            # ["exp1", "proj_t_p", "proj_p", "inter2"],
+            # ["proj_t_g", "exp2", "proj_p", "inter3"],
+            # ["proj_t_g", "proj_t_p", "exp3", "inter4"],
+            # ["proj_p", "inter4", "inter5", "inter6"],
 
            # 5
             #["proj_t_g", "proj_t_p", "proj_p", "exp1", "exp2", "exp3"],
-            ["proj_t_p", "proj_p", "inter1", "exp1"],
-            ["proj_t_g", "proj_p", "inter1", "exp2"],
-            ["proj_t_g", "proj_t_p", "inter1", "exp3"],
-            ["proj_t_g", "proj_t_p", "proj_p", "inter2", "exp1"],
+            # ["proj_t_p", "proj_p", "inter1", "exp1"],
+            # ["proj_t_g", "proj_p", "inter1", "exp2"],
+            # ["proj_t_g", "proj_t_p", "inter1", "exp3"],
+            # ["proj_t_g", "proj_t_p", "proj_p", "inter2", "exp1"],
         ]),
     }
 

@@ -154,7 +154,8 @@ def collect_training_data(dataset_names, train_set_sizes, model_family, model_si
         # balance the training dataset by including an equal number of activations from each dataset
         # choose the same subset of statements for affirmative and negated version of the dataset
         if 'neg_' not in dataset_name:
-            rand_subset = np.random.choice(acts.shape[0], min(train_set_sizes.values()), replace=False)
+            subset_size = min(acts.shape[0], min(train_set_sizes.values()))
+            rand_subset = np.random.choice(acts.shape[0], subset_size, replace=False)
         
         all_acts_centered.append(acts[rand_subset, :] - t.mean(acts[rand_subset, :], dim=0))
         all_acts.append(acts[rand_subset, :])

@@ -32,9 +32,9 @@ def learn_polarity_direction_optimal(acts, polarities):
     """Modified to accept hyperparameters"""
     polarity_LR = LogisticRegression(
         penalty='l1',
-        solver='liblinear',
-        C=0.14821529805012182,
-        max_iter=2000,
+        solver='saga',
+        C=0.00033481,
+        max_iter=5000,
         fit_intercept=True
     )
     polarity_LR.fit(acts.numpy(), polarities.numpy())
@@ -589,9 +589,8 @@ class TTPDOptimal():
         probe.LR = LogisticRegression(
             penalty='l2',
             solver='lbfgs',
-            C=8.983163355139284,
-            max_iter=1000,
-            fit_intercept=True)
+            C=0.00560875,
+            max_iter=1000)
 
         probe.LR.fit(acts_2d, labels.numpy())
         return probe

@@ -198,7 +198,7 @@ def train_ttpd_with_config(config, data_loader_fn, train_sets, val_sets,
     accuracy = (predictions == val_labels).float().mean().item()
 
     # Report metrics to Ray Tune
-    train.report({"accuracy": accuracy, "loss": 1 - accuracy})
+    tune.report({"accuracy": accuracy, "loss": 1 - accuracy})
 
 
 # ============================================================================

@@ -330,24 +330,24 @@ def get_search_space():
             ["proj_t_g", "proj_t_p", "proj_p"],
             ["exp1", "exp2", "exp3"],
             ["proj_t_g", "exp2", "exp3"],
-            ["proj_t_g", "proj_t_p", "proj_t_p_inter"],
-            ["proj_t_g", "proj_t_p", "exp2"],
-            ["proj_t_g", "proj_p", "exp3"],
+            ["exp1", "exp2", "proj_t_p_inter"],
+            ["exp1", "proj_t_p", "exp2"],
+            ["proj_t_g", "exp2", "exp3", "inter1"],
             ["proj_t_p", "inter1", "inter2"],
 
             # 4
             #["proj_t_g", "inter1", "inter2", "inter3"],
-            ["proj_t_g", "proj_t_p", "proj_p", "inter1"],
-            ["proj_t_g", "proj_t_p", "proj_p", "inter2"],
-            ["proj_t_g", "proj_t_p", "proj_p", "inter3"],
-            ["proj_t_g", "proj_t_p", "proj_p", "inter4"],
+            ["exp1", "exp2", "exp3", "inter1"],
+            ["exp1", "proj_t_p", "proj_p", "inter2"],
+            ["proj_t_g", "exp2", "proj_p", "inter3"],
+            ["proj_t_g", "proj_t_p", "exp3", "inter4"],
             ["proj_p", "inter4", "inter5", "inter6"],
 
            # 5
             #["proj_t_g", "proj_t_p", "proj_p", "exp1", "exp2", "exp3"],
-            ["proj_t_g", "proj_t_p", "proj_p", "inter1", "exp1"],
-            ["proj_t_g", "proj_t_p", "proj_p", "inter1", "exp2"],
-            ["proj_t_g", "proj_t_p", "proj_p", "inter1", "exp3"],
+            ["proj_t_p", "proj_p", "inter1", "exp1"],
+            ["proj_t_g", "proj_p", "inter1", "exp2"],
+            ["proj_t_g", "proj_t_p", "inter1", "exp3"],
             ["proj_t_g", "proj_t_p", "proj_p", "inter2", "exp1"],
         ]),
     }
@@ -533,7 +533,7 @@ def run_ray(train_sets, val_sets):
         model_size=model_size,
         model_type=model_type,
         layer=layer,
-        num_samples=100,  # Try 50 different configurations
+        num_samples=500,
         max_concurrent_trials=4,  # Run 4 trials in parallel
         use_cv=True,  # Use cross-validation
         cv_folds=6,  # 6-fold CV

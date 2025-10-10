@@ -111,20 +111,28 @@ class DataManager:
         # if proj and self.proj is not None:
         #     acts = t.mm(acts, self.proj)
         return acts, labels
-    
-def dataset_sizes(datasets):
-    """
-    Computes the size of each dataset, i.e. the number of statements.
-    Input: array of strings that are the names of the datasets
-    Output: dictionary, keys are the dataset names and values the number of statements
-    """
-    dataset_sizes_dict = {}
-    for dataset in datasets:
-        file_path = 'datasets/' + dataset + '.csv'
+
+
+def dataset_sizes(dataset_names):
+    """Modified to use absolute paths for Ray compatibility"""
+    # Get the absolute path to your project directory
+    # Adjust this to point to your project root
+    PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))  # If in a .py file
+    # OR for notebooks:
+    # PROJECT_ROOT = os.getcwd()
+
+    sizes = {}
+    for dataset_name in dataset_names:
+        base_name = dataset_name.replace('_conj', '').replace('_disj', '').replace('neg_', '')
+        file_path = os.path.join(PROJECT_ROOT, 'datasets', f'{base_name}.csv')
+
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Dataset not found: {file_path}")
+
         with open(file_path, 'r') as file:
-            line_count = sum(1 for line in file)
-        dataset_sizes_dict[dataset] = line_count - 1
-    return dataset_sizes_dict
+            sizes[dataset_name] = sum(1 for _ in file) - 1  # Subtract header
+
+    return sizes
 
 def collect_training_data(dataset_names, train_set_sizes, model_family, model_size
                           , model_type, layer, **kwargs):
@@ -154,7 +162,69 @@ def collect_training_data(dataset_names, train_set_sizes, model_family, model_si
         all_polarities.append(polarities[rand_subset])
 
     return map(t.cat, (all_acts_centered, all_acts, all_labels, all_polarities))
-    
+
+
+def collect_training_data_tuner(dataset_names, train_set_sizes, model_family,
+                                model_size, model_type, layer, seed=None, **kwargs):
+    """
+    Fixed version of collect_training_data with proper handling of paired datasets
+
+    Takes as input the names of datasets in the format
+    [affirmative_dataset1, negated_dataset1, affirmative_dataset2, negated_dataset2, ...]
+    and returns a balanced training dataset of centered activations, activations, labels and polarities
+
+    Args:
+        seed: Random seed for reproducible subset selection
+    """
+    if seed is not None:
+        np.random.seed(seed)
+
+    all_acts_centered, all_acts, all_labels, all_polarities = [], [], [], []
+
+    # Pre-generate random subsets for each affirmative dataset
+    # This ensures the same subset is used for both affirmative and negated versions
+    rand_subsets = {}
+    for dataset_name in dataset_names:
+        if 'neg_' not in dataset_name:
+            # Load to get size
+            dm = DataManager()
+            dm.add_dataset(dataset_name, model_family, model_size, model_type, layer,
+                           split=None, center=False, device='cpu')
+            acts, _ = dm.data[dataset_name]
+
+            # Generate random subset
+            rand_subsets[dataset_name] = np.random.choice(
+                acts.shape[0],
+                min(train_set_sizes.values()),
+                replace=False
+            )
+
+    # Now process all datasets with pre-computed subsets
+    for dataset_name in dataset_names:
+        dm = DataManager()
+        dm.add_dataset(dataset_name, model_family, model_size, model_type, layer,
+                       split=None, center=False, device='cpu')
+        acts, labels = dm.data[dataset_name]
+
+        polarity = -1.0 if 'neg_' in dataset_name else 1.0
+        polarities = t.full((labels.shape[0],), polarity)
+
+        # Get the appropriate subset
+        if 'neg_' in dataset_name:
+            # Use the subset from the corresponding affirmative dataset
+            base_name = dataset_name.replace('neg_', '')
+            rand_subset = rand_subsets[base_name]
+        else:
+            rand_subset = rand_subsets[dataset_name]
+
+        all_acts_centered.append(acts[rand_subset, :] - t.mean(acts[rand_subset, :], dim=0))
+        all_acts.append(acts[rand_subset, :])
+        all_labels.append(labels[rand_subset])
+        all_polarities.append(polarities[rand_subset])
+
+    return map(t.cat, (all_acts_centered, all_acts, all_labels, all_polarities))
+
+
 def compute_statistics(results):
     stats = {}
     for key in results:

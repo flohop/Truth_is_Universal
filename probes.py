@@ -176,6 +176,9 @@ def train_ttpd_with_config(config, data_loader_fn, train_sets, val_sets,
         model_family, model_size, model_type, layer: Model specifications
     """
 
+    config.update({f"polarity_{k}": v for k, v in config.pop("polarity_combo").items()})
+    config.update({f"final_{k}": v for k, v in config.pop("final_combo").items()})
+
     # Load training data
     train_set_sizes = dataset_sizes(train_sets)
     acts_centered, acts, labels, polarities = data_loader_fn(
@@ -209,6 +212,11 @@ def train_ttpd_with_cv(config, data_loader_fn, all_train_sets,
 
     Performs k-fold CV by holding out pairs of datasets
     """
+
+    # unpack combos
+    config.update({f"polarity_{k}": v for k, v in config.pop("polarity_combo").items()})
+    config.update({f"final_{k}": v for k, v in config.pop("final_combo").items()})
+
     all_train_sets = np.array(all_train_sets)
     accuracies = []
 
@@ -252,62 +260,66 @@ def train_ttpd_with_cv(config, data_loader_fn, all_train_sets,
 
 def get_search_space():
     """
-    Define the hyperparameter search space
-
-    Returns:
-        Dictionary with Ray Tune search space specifications
+    Define the hyperparameter search space — only valid (penalty, solver) pairs.
     """
+
+    # Valid polarity LR combos
+    polarity_options = [
+        {"penalty": "l2", "solver": "lbfgs"},
+        {"penalty": "l2", "solver": "liblinear"},
+        {"penalty": "l1", "solver": "liblinear"},
+        {"penalty": "l1", "solver": "saga"},
+        {"penalty": None, "solver": "lbfgs"},
+    ]
+
+    # Valid final LR combos
+    final_options = [
+        {"penalty": "l2", "solver": "lbfgs"},
+        {"penalty": "l2", "solver": "liblinear"},
+        {"penalty": "l1", "solver": "liblinear"},
+        {"penalty": None, "solver": "lbfgs"},
+    ]
+
     search_space = {
-        # Polarity LR hyperparameters
+        # choose one valid combination each time
+        "polarity_combo": tune.choice(polarity_options),
+        "final_combo": tune.choice(final_options),
+
+        # for l1
+        # scalar hyperparams
         "polarity_C": tune.loguniform(1e-4, 10.0),
-        "polarity_penalty": tune.choice(['l1', 'l2', 'elasticnet', None]),
-        "polarity_solver": tune.choice(['lbfgs', 'liblinear', 'saga']),
+        "polarity_l1_ratio": tune.uniform(0.0, 1.0),  # used only if elasticnet
         "polarity_max_iter": tune.choice([1000, 2000, 3000, 5000]),
 
-        "features":  tune.choice([
+        "final_C": tune.loguniform(1e-4, 10.0),
+        "final_max_iter": tune.choice([500, 1000, 2000]),
+        "final_l1_ratio": tune.uniform(0.0, 1.0),
 
-            # Core pairs
+        # feature sets
+        "features": tune.choice([
             ["proj_t_g", "proj_t_p"],
             ["proj_t_g", "proj_p"],
             ["proj_t_p", "proj_p"],
-
-            # Triplets
             ["proj_t_g", "proj_t_p", "proj_p"],
-
-            # With main interaction
             ["proj_t_g", "proj_t_p_inter"],
             ["proj_t_g", "proj_t_p", "proj_t_p_inter"],
-
-            # With individual inter features
             ["proj_t_g", "inter1"],
             ["proj_t_g", "inter2"],
             ["proj_t_g", "inter3"],
             ["proj_t_g", "inter1", "inter2", "inter3"],
-
-            # With polarity + interactions
             ["proj_t_p", "inter1", "inter2"],
             ["proj_p", "inter4", "inter5", "inter6"],
-
-            # With expansion features
             ["proj_t_g", "exp1"],
             ["proj_t_g", "proj_t_p", "exp2"],
             ["proj_t_g", "proj_p", "exp3"],
             ["proj_t_g", "proj_t_p", "proj_p", "exp1", "exp2", "exp3"],
-
-            # Full set
             ["proj_t_g", "proj_t_p", "proj_p", "proj_t_p_inter",
              "inter1", "inter2", "inter3", "inter4", "inter5", "inter6",
              "exp1", "exp2", "exp3"],
         ]),
-        # Final LR hyperparameters
-        "final_penalty": tune.choice([None, 'l2']),
-        "final_C": tune.loguniform(1e-4, 10.0),
-        "final_solver": tune.choice(['lbfgs', 'liblinear', 'saga']),
-        "final_max_iter": tune.choice([500, 1000, 2000]),
     }
 
     return search_space
-
 
 def optimize_ttpd_hyperparameters(
         data_loader_fn,
@@ -485,7 +497,7 @@ def run_ray():
         model_size=model_size,
         model_type=model_type,
         layer=layer,
-        num_samples=50,  # Try 50 different configurations
+        num_samples=100,  # Try 50 different configurations
         max_concurrent_trials=4,  # Run 4 trials in parallel
         use_cv=True,  # Use cross-validation
         cv_folds=6,  # 6-fold CV

@@ -247,6 +247,11 @@ def train_ttpd_with_cv(config, data_loader_fn, all_train_sets,
             acc = (predictions == val_labels).float().mean().item()
             accuracies.append(acc)
 
+            tune.report({
+                "accuracy": acc,
+                "loss": 1 - acc
+            })
+
     # Report mean accuracy across CV folds
     mean_accuracy = np.mean(accuracies)
     std_accuracy = np.std(accuracies)
@@ -262,7 +267,6 @@ def get_search_space():
     """
     Define the hyperparameter search space — only valid (penalty, solver) pairs.
     """
-
     # Valid polarity LR combos
     polarity_options = [
         {"penalty": "l2", "solver": "lbfgs"},
@@ -297,25 +301,41 @@ def get_search_space():
 
         # feature sets
         "features": tune.choice([
+            # 2 pairs
+            ["proj_t_g", "proj_p"],
+            ["proj_t_g", "exp2"],
             ["proj_t_g", "proj_t_p"],
             ["proj_t_g", "proj_p"],
             ["proj_t_p", "proj_p"],
-            ["proj_t_g", "proj_t_p", "proj_p"],
             ["proj_t_g", "proj_t_p_inter"],
-            ["proj_t_g", "proj_t_p", "proj_t_p_inter"],
             ["proj_t_g", "inter1"],
             ["proj_t_g", "inter2"],
-            ["proj_t_g", "inter3"],
-            ["proj_t_g", "inter1", "inter2", "inter3"],
-            ["proj_t_p", "inter1", "inter2"],
-            ["proj_p", "inter4", "inter5", "inter6"],
             ["proj_t_g", "exp1"],
+            ["proj_t_g", "inter3"],
+
+            # 3
+            ["proj_t_g", "proj_t_p", "proj_p"],
+            ["exp1", "exp2", "exp3"],
+            ["proj_t_g", "exp2", "exp3"],
+            ["proj_t_g", "proj_t_p", "proj_t_p_inter"],
             ["proj_t_g", "proj_t_p", "exp2"],
             ["proj_t_g", "proj_p", "exp3"],
-            ["proj_t_g", "proj_t_p", "proj_p", "exp1", "exp2", "exp3"],
-            ["proj_t_g", "proj_t_p", "proj_p", "proj_t_p_inter",
-             "inter1", "inter2", "inter3", "inter4", "inter5", "inter6",
-             "exp1", "exp2", "exp3"],
+            ["proj_t_p", "inter1", "inter2"],
+
+            # 4
+            #["proj_t_g", "inter1", "inter2", "inter3"],
+            ["proj_t_g", "proj_t_p", "proj_p", "inter1"],
+            ["proj_t_g", "proj_t_p", "proj_p", "inter2"],
+            ["proj_t_g", "proj_t_p", "proj_p", "inter3"],
+            ["proj_t_g", "proj_t_p", "proj_p", "inter4"],
+            ["proj_p", "inter4", "inter5", "inter6"],
+
+           # 5
+            #["proj_t_g", "proj_t_p", "proj_p", "exp1", "exp2", "exp3"],
+            ["proj_t_g", "proj_t_p", "proj_p", "inter1", "exp1"],
+            ["proj_t_g", "proj_t_p", "proj_p", "inter1", "exp2"],
+            ["proj_t_g", "proj_t_p", "proj_p", "inter1", "exp3"],
+            ["proj_t_g", "proj_t_p", "proj_p", "inter2", "exp1"],
         ]),
     }
 
@@ -476,10 +496,14 @@ def run_ray():
     train_sets = ["cities", "neg_cities", "sp_en_trans", "neg_sp_en_trans", "inventors", "neg_inventors", "animal_class",
                   "neg_animal_class", "element_symb", "neg_element_symb", "facts", "neg_facts"]
 
-    val_sets = ["cities_conj", "cities_disj", "sp_en_trans_conj", "sp_en_trans_disj",
-                "inventors_conj", "inventors_disj", "animal_class_conj", "animal_class_disj",
-                "element_symb_conj", "element_symb_disj", "facts_conj", "facts_disj",
-                "common_claim_true_false", "counterfact_true_false"]
+    # val_sets = ["cities_conj", "cities_disj", "sp_en_trans_conj", "sp_en_trans_disj",
+    #             "inventors_conj", "inventors_disj", "animal_class_conj", "animal_class_disj",
+    #             "element_symb_conj", "element_symb_disj", "facts_conj", "facts_disj",
+    #             "common_claim_true_false", "counterfact_true_false"]
+
+    val_sets = ["cities_de", "neg_cities_de", "sp_en_trans_de", "neg_sp_en_trans_de", "inventors_de",
+                "neg_inventors_de", "animal_class_de",
+                "neg_animal_class_de", "element_symb_de", "neg_element_symb_de", "facts_de", "neg_facts_de"]
 
     # Model specifications
     model_family = 'Llama3'

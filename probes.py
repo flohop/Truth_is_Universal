@@ -28,6 +28,19 @@ def polarity_direction_lr(acts, polarities, C=0.1, penalty='l2', solver='lbfgs',
     LR_polarity.fit(acts.numpy(), polarities_copy.numpy())
     return LR_polarity
 
+def learn_polarity_direction_optimal(acts, polarities):
+    """Modified to accept hyperparameters"""
+    polarity_LR = LogisticRegression(
+        penalty='l1',
+        solver='liblinear',
+        C=0.14821529805012182,
+        max_iter=2000,
+        fit_intercept=True
+    )
+    polarity_LR.fit(acts.numpy(), polarities.numpy())
+    return polarity_LR.coef_
+
+
 def learn_polarity_direction(acts, polarities, C=0.1, penalty='l2', solver='lbfgs', max_iter=2000):
     """Modified to accept hyperparameters"""
     polarity_direc = polarity_direction_lr(acts, polarities, C=C, penalty=penalty,
@@ -559,6 +572,41 @@ def run_ray():
 
     return final_probe, best_config, analysis
 
+class TTPDOptimal():
+    def __init__(self):
+        self.t_g = None
+        self.t_p = None
+        self.polarity_direc = None
+        self.LR = None
+
+    @staticmethod
+    def from_data(acts_centered, acts, labels, polarities):
+        probe = TTPD()
+        probe.t_g, probe.t_p = learn_truth_directions(acts_centered, labels, polarities)
+        probe.t_g = probe.t_g.numpy()
+        probe.polarity_direc = learn_polarity_direction_optimal(acts, polarities)
+        acts_2d = probe._project_acts(acts)
+        probe.LR = LogisticRegression(
+            penalty='l2',
+            solver='lbfgs',
+            C=8.983163355139284,
+            max_iter=1000,
+            fit_intercept=True)
+
+        probe.LR.fit(acts_2d, labels.numpy())
+        return probe
+
+    def pred(self, acts):
+        acts_2d = self._project_acts(acts)
+        return t.tensor(self.LR.predict(acts_2d))
+
+    def _project_acts(self, acts):
+        proj_t_g = acts.numpy() @ self.t_g
+        proj_t_p = (acts.numpy() @ self.t_p)
+        acts_2d = np.concatenate((proj_t_g[:, None], proj_t_p[:, None]), axis=1)
+        return acts_2d
+
+
 class TTPD():
     def __init__(self):
         self.t_g = None
@@ -696,8 +744,8 @@ class MMProbe(t.nn.Module):
         return probe
 
 
-TTPD_TYPES = []
-ALL_PROBES = [CCSProbe, LRProbe]
+TTPD_TYPES = [("TTPD", TTPD), ("TTPDOpt", TTPDOptimal)]
+ALL_PROBES = TTPD_TYPES + [("CSSProbe", CCSProbe), ("LRProbe", LRProbe)]
 
 # -----------------------------------------------------------
 # Main execution

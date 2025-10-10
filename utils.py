@@ -5,8 +5,38 @@ import os
 from glob import glob
 import random
 
+from matplotlib import pyplot as plt
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 ACTS_BATCH_SIZE = 25
+
+
+def plot_lr_feature_importance(coefs, feature_names=None, title="Feature Importance (|Coefficient|)"):
+    """
+    Plot absolute logistic regression coefficients as feature importance.
+
+    Parameters
+    ----------
+    lr_model : sklearn.linear_model.LogisticRegression
+        A trained logistic regression model.
+    feature_names : list of str, optional
+        Names of the features corresponding to the coefficients.
+    title : str
+        Title for the plot.
+    """
+    coefs = coefs[0]
+    n_features = len(coefs)
+
+    if feature_names is None:
+        feature_names = [f"Feature {i}" for i in range(n_features)]
+
+    plt.figure(figsize=(5, 3))
+    plt.bar(feature_names, coefs, color="skyblue", edgecolor="black")
+    plt.ylabel("Absolute Coefficient Magnitude")
+    plt.title(title)
+    plt.grid(axis="y", linestyle="--", alpha=0.6)
+    plt.tight_layout()
+    plt.show()
 
 def collect_acts(dataset_name, model_family, model_size,
                   model_type, layer, center=True, scale=False, device='cpu'):

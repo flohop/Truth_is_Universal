@@ -9,8 +9,10 @@ from sklearn.linear_model import LogisticRegression
 import torch
 import torch as t
 import numpy as np
+from sklearn.preprocessing import StandardScaler
 
-from utils import dataset_sizes, collect_training_data, collect_training_data_tuner, DataManager
+from utils import dataset_sizes, collect_training_data, collect_training_data_tuner, DataManager, \
+    plot_lr_feature_importance
 
 project_dir = os.getcwd()
 
@@ -64,6 +66,7 @@ class TTPDTestConfigurable():
         self.t_p = None
         self.polarity_direc = None
         self.LR = None
+        self.LR_norm = None
         self.config = None
 
     @staticmethod
@@ -108,21 +111,27 @@ class TTPDTestConfigurable():
         # Project acts and fit final LR with configurable params
         acts_2d = probe._project_acts(acts, used_features=config.get("features", []))
 
+        # Normalized LR for visualization
+        scaler = StandardScaler()
+        acts_2d_scaled = scaler.fit_transform(acts_2d)
+        probe.LR_norm = LogisticRegression(penalty=None, fit_intercept=True)
+        probe.LR_norm.fit(acts_2d_scaled, labels.numpy())
+
         final_penalty = config.get('final_penalty', None)
         if final_penalty is None:
             probe.LR = LogisticRegression(
                 penalty=None,
                 fit_intercept=True,
-                solver=config.get('final_solver', 'lbfgs'),
-                max_iter=config.get('final_max_iter', 1000)
+                #solver=config.get('final_solver', 'lbfgs'),
+                #max_iter=config.get('final_max_iter', 1000)
             )
         else:
             probe.LR = LogisticRegression(
                 penalty=final_penalty,
-                C=config.get('final_C', 1.0),
+                #C=config.get('final_C', 1.0),
                 fit_intercept=True,
-                solver=config.get('final_solver', 'lbfgs'),
-                max_iter=config.get('final_max_iter', 1000)
+                #solver=config.get('final_solver', 'lbfgs'),
+                #max_iter=config.get('final_max_iter', 1000)
             )
 
         probe.LR.fit(acts_2d, labels.numpy())
@@ -632,6 +641,47 @@ class TTPD():
         return acts_2d
 
 
+
+class TTPDFeatureImp():
+    def __init__(self):
+        self.t_g = None
+        self.t_p = None
+        self.polarity_direc = None
+        self.LR = None
+        self.LR_norm = None
+
+    @staticmethod
+    def from_data(acts_centered, acts, labels, polarities):
+        probe = TTPDFeatureImp()
+        probe.t_g, probe.t_p = learn_truth_directions(acts_centered, labels, polarities)
+        probe.t_g = probe.t_g.numpy()
+        probe.t_p = probe.t_p.numpy()
+
+        probe.polarity_direc = learn_polarity_direction(acts, polarities)
+        acts_2d = probe._project_acts(acts)
+
+        scaler = StandardScaler()
+        acts_2d_scaled = scaler.fit_transform(acts_2d)
+
+        probe.LR_norm = LogisticRegression(penalty=None, fit_intercept=True)
+
+        probe.LR_norm.fit(acts_2d_scaled, labels)
+
+        probe.LR = LogisticRegression(penalty=None, fit_intercept=True)
+        probe.LR.fit(acts_2d, labels.numpy())
+        return probe
+
+    def pred(self, acts):
+        acts_2d = self._project_acts(acts)
+        return t.tensor(self.LR.predict(acts_2d))
+
+    def _project_acts(self, acts):
+        proj_t_g = acts.numpy() @ self.t_g
+        proj_p = acts.numpy() @ self.polarity_direc.T
+        acts_2d = np.concatenate((proj_t_g[:, None], proj_p), axis=1)
+        return acts_2d
+
+
 def learn_truth_directions(acts_centered, labels, polarities):
     all_polarities_zero = t.allclose(polarities, t.tensor([0.0]), atol=1e-8)
     labels_copy = t.where(labels == 0, t.tensor(-1.0), labels)
@@ -745,6 +795,21 @@ class MMProbe(t.nn.Module):
 TTPD_TYPES = [("TTPD", TTPD), ("TTPDOpt", TTPDOptimal)]
 ALL_PROBES = TTPD_TYPES + [("CSSProbe", CCSProbe), ("LRProbe", LRProbe)]
 
+def get_average_coef(t_acts_centered, t_acts, t_labels, t_polarities, config, runs=10):
+    total_coef = None
+    total_coef_norm = None
+    for _ in range(runs):
+        ttpd = TTPDTestConfigurable.from_data(t_acts_centered, t_acts, t_labels, t_polarities, config=config)
+        if total_coef is None:
+            total_coef = ttpd.LR.coef_
+            total_coef_norm = ttpd.LR_norm.coef_
+        else:
+            total_coef += ttpd.LR.coef_
+            total_coef_norm += ttpd.LR_norm.coef_
+    return total_coef / float(runs), total_coef_norm / float(runs)
+
+
+
 # -----------------------------------------------------------
 # Main execution
 # -----------------------------------------------------------
@@ -755,15 +820,15 @@ if __name__ == '__main__':
     layer = 12
     device = 'mps' if torch.backends.mps.is_built() else 'cpu'
 
-    import ray
-
-    ray.init(num_cpus=4, ignore_reinit_error=True)
-
-    # Run optimization
-    final_probe, best_config, analysis = run_ray()
-
-    # Shutdown Ray
-    ray.shutdown()
+    # import ray
+    #
+    # ray.init(num_cpus=4, ignore_reinit_error=True)
+    #
+    # # Run optimization
+    # final_probe, best_config, analysis = run_ray()
+    #
+    # # Shutdown Ray
+    # ray.shutdown()
 
     # example_config = {
     #     # Polarity logistic regression
@@ -782,26 +847,29 @@ if __name__ == '__main__':
     #     "final_max_iter": 1000,
     # }
     #
-    # train_sets = ["cities", "neg_cities", "sp_en_trans", "neg_sp_en_trans", "inventors", "neg_inventors",
-    #               "animal_class", "neg_animal_class", "element_symb", "neg_element_symb", "facts", "neg_facts"]
-    # val_sets = ["cities_conj", "cities_disj", "sp_en_trans_conj", "sp_en_trans_disj",
-    #             "inventors_conj", "inventors_disj", "animal_class_conj", "animal_class_disj",
-    #             "element_symb_conj", "element_symb_disj", "facts_conj", "facts_disj",
-    #             "common_claim_true_false", "counterfact_true_false"]
-    #
-    # train_set_sizes = dataset_sizes(train_sets)
-    # val_set_sizes = dataset_sizes(val_sets)
-    #
-    # acts_centered_train, acts_train, labels_train, polarities_train = collect_training_data(
-    #     train_sets, train_set_sizes, model_family, model_size, model_type, layer
-    # )
-    #
-    # t_acts_centered, t_acts, t_labels, t_polarities = collect_training_data(val_sets, dataset_sizes(val_sets),
-    #                                                                         model_family, model_size, model_type, layer)
-    #
-    # ttpd = TTPDTestConfigurable.from_data(acts_centered_train, acts_train, labels_train, polarities_train, example_config)
-    #
-    # print(ttpd.pred(t_acts))
+    train_sets = ["cities", "neg_cities", "sp_en_trans", "neg_sp_en_trans", "inventors", "neg_inventors",
+                  "animal_class", "neg_animal_class", "element_symb", "neg_element_symb", "facts", "neg_facts"]
+    val_sets = ["cities_conj", "cities_disj", "sp_en_trans_conj", "sp_en_trans_disj",
+                "inventors_conj", "inventors_disj", "animal_class_conj", "animal_class_disj",
+                "element_symb_conj", "element_symb_disj", "facts_conj", "facts_disj",
+                "common_claim_true_false", "counterfact_true_false"]
+
+    train_set_sizes = dataset_sizes(train_sets)
+    val_set_sizes = dataset_sizes(val_sets)
+
+    acts_centered_train, acts_train, labels_train, polarities_train = collect_training_data(
+        train_sets, train_set_sizes, model_family, model_size, model_type, layer
+    )
+
+    t_acts_centered, t_acts, t_labels, t_polarities = collect_training_data(val_sets, dataset_sizes(val_sets),
+                                                                            model_family, model_size, model_type, layer)
+
+
+    avg_coef, avg_coef_norm = get_average_coef(acts_centered_train, acts_train, labels_train, polarities_train, runs=100)
+
+    plot_lr_feature_importance(avg_coef, feature_names=["t_g_proj", "p_proj"])
+    plot_lr_feature_importance(avg_coef, feature_names=["t_g_proj", "p_proj"], title="Feature Importance Normalized (|Coefficient|)")
+
 
 
 

@@ -4,6 +4,7 @@ from ray import  tune
 from ray.tune.schedulers import ASHAScheduler
 from ray.tune.search.optuna import OptunaSearch
 from sklearn.linear_model import LogisticRegression
+from sklearn.inspection import permutation_importance
 
 import torch
 import torch as t
@@ -66,9 +67,9 @@ class TTPDTestConfigurable():
         self.t_p = None
         self.polarity_direc = None
         self.LR = None
-        self.LR_norm = None
         self.config = None
         self.scaler = None
+        self.proj_acts = None
 
     @staticmethod
     def from_data(acts_centered, acts, labels, polarities, config=None):
@@ -136,6 +137,7 @@ class TTPDTestConfigurable():
                 max_iter=config.get('final_max_iter', 1000)
             )
 
+        probe.proj_acts = acts_2d
         probe.LR.fit(acts_2d, labels.numpy())
         return probe
 
@@ -808,6 +810,7 @@ def get_average_coef(t_acts_centered, t_acts, t_labels, t_polarities, config, ru
         ttpd = TTPDTestConfigurable.from_data(
             t_acts_centered, t_acts, t_labels, t_polarities, config=config
         )
+        x = permutation_importance(ttpd.LR, ttpd.proj_acts, t_labels)
         if total_coef is None:
             total_coef = ttpd.LR.coef_
         else:

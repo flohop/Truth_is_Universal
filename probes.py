@@ -140,7 +140,7 @@ class TTPDTestConfigurable():
 
     def pred(self, acts):
         acts_2d = self._project_acts(acts, self.config["features"])
-        if self.config['use_scaler']:
+        if self.config.get('use_scaler', True):
             acts_2d = self.scaler.fit_transform(acts_2d)
         return t.tensor(self.LR.predict(acts_2d))
 
@@ -515,7 +515,7 @@ def analyze_results(analysis):
     return best_config, df
 
 
-def run_ray(train_sets, val_sets):
+def run_ray(train_sets, val_sets, num_samples=100):
     """
     Example of how to use the optimization pipeline
     """
@@ -548,7 +548,7 @@ def run_ray(train_sets, val_sets):
         model_size=model_size,
         model_type=model_type,
         layer=layer,
-        num_samples=500,
+        num_samples=num_samples,
         max_concurrent_trials=4,  # Run 4 trials in parallel
         use_cv=True,  # Use cross-validation
         cv_folds=6,  # 6-fold CV
@@ -803,16 +803,13 @@ ALL_PROBES = TTPD_TYPES + [("CSSProbe", CCSProbe), ("LRProbe", LRProbe)]
 
 def get_average_coef(t_acts_centered, t_acts, t_labels, t_polarities, config, runs=10):
     total_coef = None
-    total_coef_norm = None
     for _ in range(runs):
         ttpd = TTPDTestConfigurable.from_data(t_acts_centered, t_acts, t_labels, t_polarities, config=config)
         if total_coef is None:
             total_coef = ttpd.LR.coef_
-            total_coef_norm = ttpd.LR_norm.coef_
         else:
             total_coef += ttpd.LR.coef_
-            total_coef_norm += ttpd.LR_norm.coef_
-    return total_coef / float(runs), total_coef_norm / float(runs)
+    return total_coef / float(runs)
 
 
 

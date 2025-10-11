@@ -9,6 +9,7 @@ import torch
 import torch as t
 import numpy as np
 from sklearn.preprocessing import StandardScaler
+from tqdm import tqdm
 
 from utils import dataset_sizes, collect_training_data, collect_training_data_tuner, DataManager, \
     plot_lr_feature_importance
@@ -803,8 +804,10 @@ ALL_PROBES = TTPD_TYPES + [("CSSProbe", CCSProbe), ("LRProbe", LRProbe)]
 
 def get_average_coef(t_acts_centered, t_acts, t_labels, t_polarities, config, runs=10):
     total_coef = None
-    for _ in range(runs):
-        ttpd = TTPDTestConfigurable.from_data(t_acts_centered, t_acts, t_labels, t_polarities, config=config)
+    for _ in tqdm(range(runs), desc="Averaging coefficients"):
+        ttpd = TTPDTestConfigurable.from_data(
+            t_acts_centered, t_acts, t_labels, t_polarities, config=config
+        )
         if total_coef is None:
             total_coef = ttpd.LR.coef_
         else:

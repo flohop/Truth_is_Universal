@@ -804,18 +804,18 @@ class MMProbe(t.nn.Module):
 TTPD_TYPES = [("TTPD", TTPD), ("TTPDOpt", TTPDOptimal)]
 ALL_PROBES = TTPD_TYPES + [("CSSProbe", CCSProbe), ("LRProbe", LRProbe)]
 
-def get_average_coef(t_acts_centered, t_acts, t_labels, t_polarities, config, runs=10):
-    total_coef = None
+def get_average_feature_importance(t_acts_centered, t_acts, t_labels, t_polarities, config, runs=10):
+    total_imp = None
     for _ in tqdm(range(runs), desc="Averaging coefficients"):
         ttpd = TTPDTestConfigurable.from_data(
             t_acts_centered, t_acts, t_labels, t_polarities, config=config
         )
-        x = permutation_importance(ttpd.LR, ttpd.proj_acts, t_labels)
-        if total_coef is None:
-            total_coef = ttpd.LR.coef_
+        imp_mean = permutation_importance(ttpd.LR, ttpd.proj_acts, t_labels)["importances_mean"]
+        if total_imp is None:
+            total_imp = imp_mean
         else:
-            total_coef += ttpd.LR.coef_
-    return total_coef / float(runs)
+            total_imp += imp_mean
+    return total_imp / float(runs)
 
 
 
@@ -874,7 +874,7 @@ if __name__ == '__main__':
                                                                             model_family, model_size, model_type, layer)
 
 
-    avg_coef, avg_coef_norm = get_average_coef(acts_centered_train, acts_train, labels_train, polarities_train, runs=100)
+    avg_coef, avg_coef_norm = get_average_feature_importance(acts_centered_train, acts_train, labels_train, polarities_train, runs=100)
 
     plot_lr_feature_importance(avg_coef, feature_names=["t_g_proj", "p_proj"])
     plot_lr_feature_importance(avg_coef, feature_names=["t_g_proj", "p_proj"], title="Feature Importance Normalized (|Coefficient|)")

@@ -15,7 +15,7 @@ rm ~/miniconda3/miniconda.sh
 # Initialize and enable conda
 source ~/miniconda3/bin/activate
 conda init bash || true
-source ~/.bashrc || true
+conda config --set auto_activate_base false
 
 # Accept Anaconda Terms of Service automatically
 echo "✅ Accepting Anaconda Terms of Service..."

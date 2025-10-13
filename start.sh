@@ -8,5 +8,6 @@ cd ./Truth_is_Universal
 git stash
 git pull
 
+source ~/miniconda3/etc/profile.d/conda.sh   # or ~/anaconda3/etc/profile.d/conda.sh
 conda activate truth_is_universal
 python -m ipykernel install --user --name=truth_is_universal --display-name "Python (truth_is_universal)"

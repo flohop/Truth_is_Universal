@@ -14,6 +14,9 @@ from transformer_lens import HookedTransformer
 ROOT = os.path.dirname(os.path.abspath(__file__))
 ACTS_BATCH_SIZE = 25
 
+ROOT_DIR = os.path.dirname(os.path.realpath(__file__))
+
+
 
 def plot_lr_feature_importance(coefs, feature_names=None, title="Feature Importance (|Coefficient|)"):
     """

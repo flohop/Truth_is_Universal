@@ -3,7 +3,7 @@ tune==0.1.6
 ray==2.49.2
 tune==0.1.6
 optuna==4.5.0
-transformers==4.44.2
+transformers>=4.44.2
 sentencepiece==0.1.99
 protobuf==5.27.2
 pandas==2.2.0

@@ -131,12 +131,16 @@ else
     echo "⏭️  Skipping generation step."
 fi
 
+source ~/miniconda3/etc/profile.d/conda.sh   # or ~/anaconda3/etc/profile.d/conda.sh
 # 7. Start Jupyter server
 echo "🌐 Starting Jupyter server..."
 nohup jupyter notebook --no-browser --ip=0.0.0.0 --port=8888 > jupyter.log 2>&1 &
 sleep 5
 
 TOKEN=$(jupyter notebook list | grep -o 'token=[a-z0-9]*' | head -n 1)
+
+python -m ipykernel install --user --name=truth_is_universal --display-name "Python (truth_is_universal)"
+
 
 echo "=============================================="
 echo "✅ Setup complete!"

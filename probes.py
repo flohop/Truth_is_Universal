@@ -650,7 +650,6 @@ class TTPD():
         return acts_2d
 
 
-
 class TTPDFeatureImp():
     def __init__(self):
         self.t_g = None

@@ -15,7 +15,10 @@ class Hook:
         self.out = None
 
     def __call__(self, module, module_inputs, module_outputs):
-        self.out, _ = module_outputs
+        if len(module_inputs) == 2:
+            self.out, _ = module_inputs
+        else:
+            self.out = module_outputs
 
 def load_model(model_family: str, model_size: str, model_type: str, device: str):
     model_path = os.path.join(config[model_family]['weights_directory'], 

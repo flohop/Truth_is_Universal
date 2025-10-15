@@ -1,3 +1,5 @@
+import configparser
+
 import torch as t
 import torch.nn.functional as F
 import pandas as pd
@@ -10,13 +12,42 @@ import einops
 
 from matplotlib import pyplot as plt
 from transformer_lens import HookedTransformer
+from transformers import AutoTokenizer, AutoModelForCausalLM, LlamaTokenizer, LlamaForCausalLM
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 ACTS_BATCH_SIZE = 25
 
 ROOT_DIR = os.path.dirname(os.path.realpath(__file__))
 
+# --- Basic Config and Constants ---
+config = configparser.ConfigParser()
+# Assumes config.ini is in the same directory
+try:
+    config.read('config.ini')
+except:
+    print("Warning: config.ini not found. Model paths may not load correctly.")
 
+
+# --- Model Loading ---
+def load_model(model_family: str, model_size: str, model_type: str, device: str):
+    """Loads a model and tokenizer from the specified family, size, and type."""
+    model_path = os.path.join(config[model_family]['weights_directory'],
+                              config[model_family][f'{model_size}_{model_type}_subdir'])
+
+    if model_family == 'Llama2':
+        tokenizer = LlamaTokenizer.from_pretrained(str(model_path))
+        model = LlamaForCausalLM.from_pretrained(str(model_path))
+        tokenizer.bos_token = '<s>'
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(str(model_path))
+        model = AutoModelForCausalLM.from_pretrained(str(model_path))
+
+    if model_family == "Gemma2":
+        model = model.to(t.bfloat16)
+    else:
+        model = model.half()
+
+    return tokenizer, model.to(device)
 
 def plot_lr_feature_importance(coefs, feature_names=None, title="Feature Importance (|Coefficient|)"):
     """

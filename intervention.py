@@ -35,7 +35,6 @@ class InterventionHook:
     def set_intervention(self, vector, alpha=1.0):
         """
         Set the vector and strength for the next intervention.
-        --- FIX IS HERE ---
         Ensure the intervention vector is on the same device as the activation tensor will be.
         """
         # The activation tensors live on the module's device, so the vector should too.

@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.optim as optim
 from ray.tune.schedulers import ASHAScheduler
 from ray.tune.search.optuna import OptunaSearch
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegression, LogisticRegressionCV
 from sklearn.inspection import permutation_importance
 
 import torch
@@ -782,9 +782,54 @@ class MLPProbe(nn.Module):
         return x
 
 
-# --- 4. MLP PROBE TRAINING FUNCTION ---
+def train_linear_probe_cv_and_save(X, y, model_dtype, device):
+    """
+    Trains a robust linear probe using LogisticRegressionCV to find the optimal
+    regularization strength and saves its coefficient vector.
+    """
+    print("\nSplitting data into training and testing sets...")
+    # Using numpy for sklearn compatibility
+    X_np = X.cpu().numpy()
+    y_np = y.cpu().numpy()
 
-def train_mlp_probe_and_save_vector(X, y, model_dtype, device, epochs=10, batch_size=64):
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_np, y_np, test_size=0.2, random_state=42, stratify=y_np
+    )
+
+    print(f"Training robust linear probe with Cross-Validation on {X_train.shape[0]} samples...")
+
+    # Use LogisticRegressionCV to automatically find the best regularization strength (C).
+    # This is more robust than picking a single C value.
+    probe = LogisticRegressionCV(
+        Cs=100,  # Try 10 different C values
+        cv=5,  # Use 5-fold cross-validation
+        penalty='l1',
+        solver='saga',
+        max_iter=2000,  # Increase if it doesn't converge
+        random_state=42,
+        tol=0.01,
+        n_jobs=-1  # Use all available CPU cores
+    )
+
+    probe.fit(X_train, y_train)
+
+    # Evaluate the probe's performance
+    accuracy = probe.score(X_test, y_test)
+    print(f"\nProbe Accuracy on test set: {accuracy:.4f}")
+    print(f"Best regularization strength found (C): {probe.C_[0]}")
+
+    # Extract the learned coefficient vector (shape is 1, 4096)
+    truth_vector = t.tensor(probe.coef_.flatten(), device=device, dtype=model_dtype)
+
+    # Save the vector for use in intervention scripts
+    save_path = "linear_cv_probe.pt"
+    t.save(truth_vector, save_path)
+    print(f"Successfully saved the truth vector (shape: {truth_vector.shape}) to '{save_path}'")
+
+    num_zeroed = np.sum(probe.coef_ == 0)
+    print(f"L1 regularization zeroed out {num_zeroed} / {X_train.shape[1]} features.")
+
+def train_mlp_probe_and_save_vector(X, y, model_dtype, device, epochs=50, batch_size=64):
     """
     Trains an MLP probe using PyTorch and saves the weight of its final layer.
     """

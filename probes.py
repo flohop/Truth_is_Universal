@@ -629,6 +629,7 @@ class TTPD():
         self.polarity_direc = None
         self.LR = None
 
+    @staticmethod
     def from_data(acts_centered, acts, labels, polarities):
         probe = TTPD()
         probe.t_g, _ = learn_truth_directions(acts_centered, labels, polarities)
@@ -649,6 +650,52 @@ class TTPD():
         acts_2d = np.concatenate((proj_t_g[:, None], proj_p), axis=1)
         return acts_2d
 
+    # --- NEW METHOD ---
+    def get_intervention_vector(self):
+        """
+        Calculates the high-dimensional intervention vector from the probe.
+
+        This vector reconstructs the optimal direction from the 2D probe space
+        back into the model's high-dimensional activation space.
+
+        Returns:
+            torch.Tensor: The intervention vector with shape (d_model,).
+        """
+        if self.t_g is None or self.LR is None:
+            raise RuntimeError("Probe is not trained. Call TTPD.from_data() first.")
+
+        # 1. Extract the basis vectors (the directions you projected onto)
+        basis_vector_1 = t.tensor(self.t_g)
+        basis_vector_2 = t.tensor(self.polarity_direc.flatten())
+
+        # 2. Extract the logistic regression coefficients from the 2D probe
+        lr_coefs = self.LR.coef_.flatten()
+        c1, c2 = lr_coefs[0], lr_coefs[1]
+
+        # 3. Calculate the final vector as a weighted sum of the basis vectors
+        intervention_vector = (c1 * basis_vector_1) + (c2 * basis_vector_2)
+
+        return intervention_vector
+
+    # --- NEW METHOD ---
+    def save_intervention_vector(self, filepath, dtype=t.bfloat16):
+        """
+        Calculates and saves the high-dimensional intervention vector to a file.
+
+        Args:
+            filepath (str): The path to save the .pt file (e.g., "TTPD_probe.pt").
+            dtype (torch.dtype, optional): The dtype for model compatibility.
+                                           Defaults to torch.bfloat16.
+        """
+        # Get the correctly shaped vector
+        intervention_vector = self.get_intervention_vector()
+
+        # Cast to the desired dtype to match your model
+        intervention_vector = intervention_vector.to(dtype)
+
+        # Save the tensor
+        t.save(intervention_vector, filepath)
+        print(f"✅ Intervention vector with shape {intervention_vector.shape} saved to {filepath}")
 
 class TTPDFeatureImp():
     def __init__(self):

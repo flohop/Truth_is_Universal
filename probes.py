@@ -9,6 +9,8 @@ from sklearn.inspection import permutation_importance
 import torch
 import torch as t
 import numpy as np
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 
@@ -754,6 +756,8 @@ def learn_truth_directions(acts_centered, labels, polarities):
 #     LR.fit(acts.numpy(), polarities_copy.numpy())
 #     return LR.coef_
 
+
+
 def ccs_loss(probe, acts, neg_acts):
     p_pos = probe(acts)
     p_neg = probe(neg_acts)
@@ -802,6 +806,53 @@ class CCSProbe(t.nn.Module):
     @property
     def bias(self):
         return self.net[0].bias.data[0]
+
+
+def train_probe_and_save_vector(X, y, model_dtype, device):
+    """
+    Trains a logistic regression probe and saves its coefficient vector.
+    """
+    print("\nSplitting data into training and testing sets...")
+    # Using numpy for sklearn compatibility
+    X_np = X.cpu().numpy()
+    y_np = y.cpu().numpy()
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_np, y_np, test_size=0.2, random_state=42, stratify=y_np
+    )
+
+    print(f"Training probe on {X_train.shape[0]} samples...")
+
+    # Define the logistic regression model with strong L1 regularization
+    # L1 (Lasso) is excellent for high-dimensional data as it promotes sparsity.
+    # A small C means strong regularization. This is crucial to prevent overfitting.
+    probe = LogisticRegression(
+        penalty='l1',
+        C=0.01,
+        solver='saga',
+        max_iter=100,  # Increase if it doesn't converge
+        random_state=42,
+        tol=0.01  # Looser tolerance for faster convergence
+    )
+
+    probe.fit(X_train, y_train)
+
+    # Evaluate the probe's performance
+    y_pred = probe.predict(X_test)
+    accuracy = accuracy_score(y_test, y_pred)
+    print(f"\nProbe Accuracy on test set: {accuracy:.4f}")
+
+    # Extract the learned coefficient vector
+    # This vector represents the direction of "truth" in the 4096-dim space
+    truth_vector = t.tensor(probe.coef_.flatten(), device=device, dtype=model_dtype)
+
+    # Save the vector for use in intervention scripts
+    save_path = "high_dim_probe.pt"
+    t.save(truth_vector, save_path)
+    print(f"Successfully saved the truth vector to '{save_path}'")
+
+    num_zeroed = np.sum(probe.coef_ == 0)
+    print(f"L1 regularization zeroed out {num_zeroed} / {X_train.shape[1]} features.")
 
 
 class LRProbe():

@@ -202,35 +202,6 @@ def dataset_sizes(dataset_names):
 
     return sizes
 
-def collect_training_data(dataset_names, train_set_sizes, model_family, model_size
-                          , model_type, layer, **kwargs):
-    """
-    Takes as input the names of datasets in the format
-    [affirmative_dataset1, negated_dataset1, affirmative_dataset2, negated_dataset2, ...]
-    and returns a balanced training dataset of centered activations, activations, labels and polarities
-    """
-    all_acts_centered, all_acts, all_labels, all_polarities = [], [], [], []
-    
-    for dataset_name in dataset_names:
-        dm = DataManager()
-        dm.add_dataset(dataset_name, model_family, model_size, model_type, layer, split=None, center=False, device='cpu')
-        acts, labels = dm.data[dataset_name]
-        
-        polarity = -1.0 if 'neg_' in dataset_name else 1.0
-        polarities = t.full((labels.shape[0],), polarity)
-
-        # balance the training dataset by including an equal number of activations from each dataset
-        # choose the same subset of statements for affirmative and negated version of the dataset
-        if 'neg_' not in dataset_name:
-            subset_size = min(acts.shape[0], min(train_set_sizes.values()))
-            rand_subset = np.random.choice(acts.shape[0], subset_size, replace=False)
-        
-        all_acts_centered.append(acts[rand_subset, :] - t.mean(acts[rand_subset, :], dim=0))
-        all_acts.append(acts[rand_subset, :])
-        all_labels.append(labels[rand_subset])
-        all_polarities.append(polarities[rand_subset])
-
-    return map(t.cat, (all_acts_centered, all_acts, all_labels, all_polarities))
 
 
 def collect_training_data_tuner(dataset_names, train_set_sizes, model_family,

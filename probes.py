@@ -1,6 +1,8 @@
 import os
 
 from ray import  tune
+import torch.nn as nn
+import torch.optim as optim
 from ray.tune.schedulers import ASHAScheduler
 from ray.tune.search.optuna import OptunaSearch
 from sklearn.linear_model import LogisticRegression
@@ -755,6 +757,85 @@ def learn_truth_directions(acts_centered, labels, polarities):
 #     LR = LogisticRegression(penalty='l2', C=0.1, fit_intercept=True, solver='lbfgs', max_iter=2000)
 #     LR.fit(acts.numpy(), polarities_copy.numpy())
 #     return LR.coef_
+
+
+class MLPProbe(nn.Module):
+    """
+    A non-linear probe using a simple Multi-Layer Perceptron.
+    This can learn a more complex decision boundary than logistic regression.
+    """
+
+    def __init__(self, input_dim, hidden_dim=512):
+        super(MLPProbe, self).__init__()
+        self.input_layer = nn.Linear(input_dim, hidden_dim)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(0.5)
+        self.output_layer = nn.Linear(hidden_dim, 1)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        x = self.input_layer(x)
+        x = self.relu(x)
+        x = self.dropout(x)
+        x = self.output_layer(x)
+        x = self.sigmoid(x)
+        return x
+
+
+# --- 4. MLP PROBE TRAINING FUNCTION ---
+
+def train_mlp_probe_and_save_vector(X, y, model_dtype, device, epochs=10, batch_size=64):
+    """
+    Trains an MLP probe using PyTorch and saves the weight of its final layer.
+    """
+    print("\nSplitting data into training and testing sets...")
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y.cpu()
+    )
+
+    input_dim = X_train.shape[1]
+    probe = MLPProbe(input_dim).to(device)
+
+    criterion = nn.BCELoss()  # Binary Cross-Entropy Loss
+    optimizer = optim.AdamW(probe.parameters(), lr=0.0001, weight_decay=0.01)
+
+    print(f"Training MLP probe on {X_train.shape[0]} samples...")
+
+    probe.train()
+    for epoch in range(epochs):
+        permutation = t.randperm(X_train.size(0))
+        for i in tqdm(range(0, X_train.size(0), batch_size), desc=f"Epoch {epoch + 1}/{epochs}"):
+            indices = permutation[i:i + batch_size]
+            batch_X, batch_y = X_train[indices], y_train[indices]
+
+            batch_X = batch_X.to(device)
+            batch_y = batch_y.to(device).unsqueeze(1).float()
+
+            optimizer.zero_grad()
+            outputs = probe(batch_X)
+            loss = criterion(outputs, batch_y)
+            loss.backward()
+            optimizer.step()
+
+        print(f"Epoch {epoch + 1}/{epochs}, Loss: {loss.item():.4f}")
+
+    # Evaluate the probe's performance
+    probe.eval()
+    with t.no_grad():
+        y_pred_tensor = probe(X_test.to(device))
+        y_pred = (y_pred_tensor > 0.5).float().cpu().numpy()
+        accuracy = accuracy_score(y_test.cpu().numpy(), y_pred)
+
+    print(f"\nMLP Probe Accuracy on test set: {accuracy:.4f}")
+
+    # Extract the weight vector from the *output layer* of the MLP.
+    # This is a good approximation of the final learned "truth direction".
+    truth_vector = probe.output_layer.weight.data.flatten().to(device).to(model_dtype)
+
+    # Save the vector for intervention scripts
+    save_path = "mlp_probe.pt"
+    t.save(truth_vector, save_path)
+    print(f"Successfully saved the MLP probe's final layer weight to '{save_path}'")
 
 
 

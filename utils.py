@@ -190,7 +190,8 @@ def dataset_sizes(dataset_names):
 
     sizes = {}
     for dataset_name in dataset_names:
-        base_name = dataset_name.replace('_conj', '').replace('_disj', '').replace('neg_', '')
+        # base_name = dataset_name.replace('_conj', '').replace('_disj', '').replace('neg_', '')
+        base_name = dataset_name.replace('neg_', '')
         file_path = os.path.join(PROJECT_ROOT, 'datasets', f'{base_name}.csv')
 
         if not os.path.exists(file_path):

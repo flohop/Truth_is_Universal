@@ -830,7 +830,7 @@ def train_probe_and_save_vector(X, y, model_dtype, device):
         penalty='l1',
         C=0.01,
         solver='saga',
-        max_iter=100,  # Increase if it doesn't converge
+        max_iter=3000,  # Increase if it doesn't converge
         random_state=42,
         tol=0.01  # Looser tolerance for faster convergence
     )

@@ -50,7 +50,6 @@ class InterventionHook:
         self.intervention_vector = None
 
 
-# --- FIX IS IN THIS FUNCTION ---
 def run_intervention_experiment(model, tokenizer, shortcut_vector, test_statement, target_layer, alpha):
     """
     Runs a statement through the model with and without intervention and prints the results.
@@ -72,7 +71,7 @@ def run_intervention_experiment(model, tokenizer, shortcut_vector, test_statemen
 
     # 1. Baseline Run
     intervention_hook.reset()
-    baseline_output_ids = model.generate(**inputs, max_new_tokens=5, do_sample=False)
+    baseline_output_ids = model.generate(**inputs, max_new_tokens=1, do_sample=False)
     baseline_completion = tokenizer.decode(baseline_output_ids[0], skip_special_tokens=True)
 
     print(f"\n✅ Baseline (Normal Run):")

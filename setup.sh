@@ -30,9 +30,9 @@ git config --global lfs.concurrenttransfers 10
 
 
 # --- 2. Clone Llama3 Weights ---
-echo "🧠 Cloning Llama3 weights to /quickpod..."
-mkdir -p /quickpod/weights
-cd /quickpod/weights || exit 1
+echo "🧠 Cloning Llama3 weights to /home/fhoppe/..."
+mkdir -p /home/fhoppe/weights
+cd /home/fhoppe/weights || exit 1
 
 REPO_URL="https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct"
 TARGET_DIR="Meta-Llama-3-8B-Instruct"
@@ -59,23 +59,23 @@ EOF
 fi
 
 
-# 3. Clone the Truth_is_Universal repo
-echo "💾 Cloning the Truth_is_Universal repository..."
-cd /workspace
-if [ -d "Truth_is_Universal" ]; then
-    echo "📂 Truth_is_Universal already exists, skipping clone."
-else
-    git clone https://github.com/flohop/Truth_is_Universal.git
-fi
+# # 3. Clone the Truth_is_Universal repo
+# echo "💾 Cloning the Truth_is_Universal repository..."
+# cd /workspace
+# if [ -d "Truth_is_Universal" ]; then
+#     echo "📂 Truth_is_Universal already exists, skipping clone."
+# else
+#     git clone https://github.com/flohop/Truth_is_Universal.git
+# fi
 
 
 # 4. Update config.ini
-CONFIG_PATH="/workspace/Truth_is_Universal/config.ini"
+CONFIG_PATH="/home/fhoppe/Truth_is_Universal/config.ini"
 echo "🛠️  Updating config.ini to point to Llama3 weights..."
 
 cat > "$CONFIG_PATH" <<EOL
 [Llama3]
-weights_directory = /quickpod/weights
+weights_directory = /home/fhoppe/weights
 8B_base_subdir = Meta-Llama-3-8B-Instruct
 8B_chat_subdir = Meta-Llama-3-8B-Instruct
 70B_base_subdir = llama3_70b_hf
@@ -114,7 +114,7 @@ if ! conda env list | grep -q "truth_is_universal"; then
     conda create -y -n truth_is_universal python=3.11
 fi
 conda activate truth_is_universal
-cd /workspace/Truth_is_Universal
+cd /home/fhoppe/Truth_is_Universal
 pip install -r requirements.txt
 
 # chmod of start

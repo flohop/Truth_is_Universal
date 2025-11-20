@@ -45,9 +45,11 @@ def load_model(model_family: str, model_size: str, model_type: str, device: str)
     if model_family == "Gemma2":
         model = model.to(t.bfloat16)
     else:
-        model = model.half()
+        pass
+        #model = model.half()
 
     return tokenizer, model.to(device)
+
 
 def plot_lr_feature_importance(coefs, feature_names=None, title="Feature Importance (|Coefficient|)"):
     """
@@ -86,8 +88,8 @@ def collect_acts(dataset_name, model_family, model_size,
     try:
         acts = t.cat(acts, dim=0).to(device)
     except:
-        raise Exception("No activation vectors could be found for the dataset " 
-                        + dataset_name + ". Please generate them first using generate_acts.")
+        raise Exception(f"No activation vectors could be found for the dataset " 
+                        + dataset_name + " for layer" + layer + ". Please generate them first using generate_acts.. Full path:" + os.path.join(directory, f'layer_{layer}_i.pt'))
     if center:
         acts = acts - t.mean(acts, dim=0)
     if scale:
@@ -125,16 +127,23 @@ class DataManager:
         self.proj = None # projection matrix for dimensionality reduction
     
     def add_dataset(self, dataset_name, model_family, model_size, model_type, layer,
-                     label='label', split=None, seed=None, center=True, scale=False, device='cpu'):
+                 label='label', split=None, seed=None, center=True, scale=False, device='cpu'):
         """
         Add a dataset to the DataManager.
         label : which column of the csv file to use as the labels.
         If split is not None, gives the train/val split proportion. Uses seed for reproducibility.
         """
         acts = collect_acts(dataset_name, model_family, model_size, model_type,
-                             layer, center=center, scale=scale, device=device)
+                            layer, center=center, scale=scale, device=device)
         df = pd.read_csv(os.path.join(ROOT, 'datasets', f'{dataset_name}.csv'))
-        labels = t.Tensor(df[label].values).to(device)
+        
+        # Convert WHITE/BLACK string labels to numeric
+        label_values = df[label].values
+        if label_values.dtype == np.object_ or label_values.dtype.kind in ['U', 'S']:
+            # Map WHITE to 0, BLACK to 1
+            label_values = np.array([0 if val == "WHITE" else 1 for val in label_values])
+        
+        labels = t.tensor(label_values, dtype=t.long).to(device)
 
         if split is None:
             self.data[dataset_name] = acts, labels

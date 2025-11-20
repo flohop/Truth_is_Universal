@@ -15,6 +15,11 @@ from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
+import pandas as pd
 
 from utils import dataset_sizes, collect_training_data, collect_training_data_tuner, DataManager, \
     plot_lr_feature_importance
@@ -647,14 +652,47 @@ class TTPD():
     def pred(self, acts):
         acts_2d = self._project_acts(acts)
         return t.tensor(self.LR.predict(acts_2d))
+    
+    def pred_details(self, acts):
+        """
+        Returns a DataFrame with Prediction, Confidence, and t_g score.
+        """
+        # 1. Get the projected 2D features
+        acts_2d = self._project_acts(acts)
+        
+        # REMOVED: Scaler logic. The simple TTPD class does not use a scaler 
+        # in from_data, so we must not use one here.
+
+        # 2. Get Probabilities (Confidence)
+        # returns [[prob_0, prob_1], [prob_0, prob_1], ...]
+        probs = self.LR.predict_proba(acts_2d)
+        conf_truth = probs[:, 1]  # Probability that label is 1 (Truth)
+
+        # 3. Calculate raw t_g alignment
+        if isinstance(acts, t.Tensor):
+            acts_np = acts.cpu().numpy()
+        else:
+            acts_np = acts
+            
+        tg_scores = acts_np @ self.t_g
+
+        # 4. Combine into a clean DataFrame for inspection
+        results = pd.DataFrame({
+            "prediction": self.LR.predict(acts_2d),
+            "confidence": conf_truth,  # 0.0 = Confident Lie, 1.0 = Confident Truth
+            "tg_score": tg_scores      # Higher = More alignment with Truth Direction
+        })
+
+        return results
+    
 
     def _project_acts(self, acts):
         proj_t_g = acts.numpy() @ self.t_g
         proj_p = acts.numpy() @ self.polarity_direc.T
         acts_2d = np.concatenate((proj_t_g[:, None], proj_p), axis=1)
-        return acts_2d
+        return acts_2d 
 
-    # --- NEW METHOD ---
+
     def get_intervention_vector(self):
         """
         Calculates the high-dimensional intervention vector from the probe.
@@ -750,6 +788,37 @@ def learn_truth_directions(acts_centered, labels, polarities):
         return solution.flatten(), None
     else:
         return solution[0,:], solution[1,:]
+
+def learn_bw_direction(acts_centered: t.Tensor,
+                       labels: t.Tensor,
+                       positive_label: int = 1,
+                       normalize: bool = True):
+    """
+    Learn one direction that separates black vs white lies.
+
+    Args:
+        acts_centered: [N, D] centered activations.
+        labels:        [N] with values in {0,1}; by default 1=black, 0=white.
+        positive_label: which label is treated as +1 in the regression target.
+        normalize:      L2-normalize the returned direction.
+
+    Returns:
+        direction: [D] black/white direction (unit-norm if normalize=True)
+        None:      placeholder for backward-compat with (vec_g, vec_p) APIs
+    """
+    # Map labels to y in {-1, +1} on the correct device/dtype
+    y = t.where(labels == positive_label,
+                t.tensor(1.0, device=acts_centered.device, dtype=acts_centered.dtype),
+                t.tensor(-1.0, device=acts_centered.device, dtype=acts_centered.dtype))
+
+    # Closed-form LS: beta = (1 / sum(y^2)) * sum_i y_i * x_i
+    # (equivalently proportional to mean difference between classes)
+    direction = (y[:, None] * acts_centered).sum(dim=0) / y.pow(2).sum()
+
+    if normalize:
+        direction = direction / (direction.norm() + 1e-12)
+
+    return direction, None
 
 # def learn_polarity_direction(acts, polarities):
 #     polarities_copy = polarities.clone()
@@ -979,6 +1048,72 @@ def train_probe_and_save_vector(X, y, model_dtype, device):
 
     num_zeroed = np.sum(probe.coef_ == 0)
     print(f"L1 regularization zeroed out {num_zeroed} / {X_train.shape[1]} features.")
+
+
+class BlackWhiteLRProbe:
+    def __init__(self):
+        self.LR = None
+        self.scaler = None
+
+    @staticmethod
+    def from_data(acts: t.Tensor, labels: t.Tensor, test_size: float = 0.1, random_state: int = 42):
+        """
+        Trains a Logistic Regression probe on white vs black lie activations.
+        Uses 90/10 train/test split and prints evaluation metrics.
+        """
+        # Convert tensors -> numpy
+        X = acts.cpu().numpy()
+        y = labels.cpu().numpy()
+
+        # Split into train/test
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, stratify=y, random_state=random_state
+        )
+
+        # Standardize features (fit on train only)
+        scaler = StandardScaler()
+        X_train = scaler.fit_transform(X_train)
+        X_test = scaler.transform(X_test)
+
+        # Logistic Regression (best general setup for activations)
+        # - L2 regularization to prevent overfitting
+        # - saga solver supports large data and elastic net
+        LR = LogisticRegression(
+            penalty="l2",
+            solver="saga",
+            C=0.1,
+            max_iter=2000,
+            class_weight="balanced",   # helps with small label imbalance
+            n_jobs=-1,
+            random_state=random_state,
+        )
+
+        # Fit
+        LR.fit(X_train, y_train)
+
+        # Evaluate
+        y_pred = LR.predict(X_test)
+        y_prob = LR.predict_proba(X_test)[:, 1]
+
+        acc = accuracy_score(y_test, y_pred)
+        f1 = f1_score(y_test, y_pred)
+        auc = roc_auc_score(y_test, y_prob)
+
+        print(f"✅ Logistic Regression Probe trained.")
+        print(f"Accuracy: {acc:.3f} | F1: {f1:.3f} | AUROC: {auc:.3f}")
+
+        # Save to class
+        probe = BlackWhiteLRProbe()
+        probe.LR = LR
+        probe.scaler = scaler
+        return probe
+
+    def pred(self, acts: t.Tensor):
+        """Predict labels for new activations."""
+        X = acts.cpu().numpy()
+        X = self.scaler.transform(X)
+        preds = self.LR.predict(X)
+        return t.tensor(preds)
 
 
 class LRProbe():

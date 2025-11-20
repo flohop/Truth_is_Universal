@@ -99,6 +99,17 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     datasets = args.datasets
+    if datasets == ["custom"]:
+        datasets = ["real_examples"]
+    if datasets == ["lie_statements"]:
+        #black_lies = ["colleagues", "police", "sales", "teachers"]
+        #black_lies = [os.path.join("lie_statements", "black_lies", name) for name in black_lies]
+        white_lies = ["colleagues", "friendship", "parents", "teachers"]
+        white_lies = [os.path.join("lie_statements", "white_lies", name) for name in white_lies]
+        datasets = white_lies
+    if datasets == ['b_w_lies']:
+        datasets = ['b_w_lies/colleague', 'b_w_lies/friends', 'b_w_lies/lawyer', 'b_w_lies/police',
+                    'b_w_lies/real_estate_agent', 'b_w_lies/soccer', 'b_w_lies/teacher']
     if datasets == ['all_topic_specific']:
         datasets = ['cities', 'sp_en_trans', 'inventors', 'animal_class', 'element_symb', 'facts',
                     'neg_cities', 'neg_sp_en_trans', 'neg_inventors', 'neg_animal_class', 'neg_element_symb', 'neg_facts',

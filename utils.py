@@ -11,7 +11,6 @@ import einops
 
 
 from matplotlib import pyplot as plt
-from transformer_lens import HookedTransformer
 from transformers import AutoTokenizer, AutoModelForCausalLM, LlamaTokenizer, LlamaForCausalLM
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -89,7 +88,7 @@ def collect_acts(dataset_name, model_family, model_size,
         acts = t.cat(acts, dim=0).to(device)
     except:
         raise Exception(f"No activation vectors could be found for the dataset " 
-                        + dataset_name + " for layer" + layer + ". Please generate them first using generate_acts.. Full path:" + os.path.join(directory, f'layer_{layer}_i.pt'))
+                        + dataset_name + " for layer" + str(layer) + ". Please generate them first using generate_acts.. Full path:" + os.path.join(directory, f'layer_{layer}_i.pt'))
     if center:
         acts = acts - t.mean(acts, dim=0)
     if scale:
@@ -429,22 +428,22 @@ def get_svd(_model, toxic_vector, num_mlp_vecs):
     svd = t.linalg.svd(_top_vecs.transpose(0, 1))
     return svd, sorted_scores
 
-def load_hooked(model_name, weights_path):
-    _model = HookedTransformer.from_pretrained(model_name,
-                                               device="cpu",
-                                               )
-    cfg = _model.cfg
+# def load_hooked(model_name, weights_path):
+#     _model = HookedTransformer.from_pretrained(model_name,
+#                                                device="cpu",
+#                                                )
+#     cfg = _model.cfg
 
 
-    _weights = t.load(weights_path, map_location=t.device("cpu"))[
-        "state"
-    ]
-    weights = convert(_weights, cfg)
-    model = HookedTransformer(cfg)
-    model.load_and_process_state_dict(weights)
-    model.tokenizer.padding_side = "left"
-    model.tokenizer.pad_token_id = model.tokenizer.eos_token_id
-    return model
+#     _weights = t.load(weights_path, map_location=t.device("cpu"))[
+#         "state"
+#     ]
+#     weights = convert(_weights, cfg)
+#     model = HookedTransformer(cfg)
+#     model.load_and_process_state_dict(weights)
+#     model.tokenizer.padding_side = "left"
+#     model.tokenizer.pad_token_id = model.tokenizer.eos_token_id
+#     return model
 
      
 

@@ -41,11 +41,14 @@ def load_model(model_family: str, model_size: str, model_type: str, device: str)
         print(f"Error loading model: {e}")
         raise
 
-def load_statements(dataset_name):
+def load_statements(dataset_name, base_path=""):
     """
     Load statements from csv file, return list of strings.
     """
-    dataset = pd.read_csv(f"datasets/{dataset_name}.csv")
+    if base_path:
+        dataset = pd.read_csv(os.path.join(base_path, "datasets", f"{dataset_name}.csv"))
+    else:
+        dataset = pd.read_csv(f"datasets/{dataset_name}.csv")
     statements = dataset['statement'].tolist()
     return statements
 
@@ -80,33 +83,32 @@ def get_acts(statements, tokenizer, model, layers, device):
     
     return acts
 
-if __name__ == "__main__":
-    """
-    read statements from dataset, record activations in given layers, and save to specified files
-    """
+def get_parser():
     parser = argparse.ArgumentParser(description="Generate activations for statements in a dataset")
-    parser.add_argument("--model_family", default="Llama3", help="Model family to use. Options are Llama2, Llama3, Gemma, Gemma2 or Mistral.")
-    parser.add_argument("--model_size", default="8B",
-                        help="Size of the model to use. Options for Llama3 are 8B or 70B")
-    parser.add_argument("--model_type", default="base", help="Whether to choose base or chat model. Options are base or chat.")
-    parser.add_argument("--layers", nargs='+', 
-                        help="Layers to save embeddings from.")
-    parser.add_argument("--datasets", nargs='+',
-                        help="Names of datasets, without .csv extension")
-    parser.add_argument("--output_dir", default="acts",
-                        help="Directory to save activations to.")
+    parser.add_argument("--model_family", default="Llama3", help="Model family: Llama2, Llama3, Gemma, Gemma2, Mistral.")
+    parser.add_argument("--model_size", default="8B", help="Size: 8B or 70B")
+    parser.add_argument("--model_type", default="base", help="Type: base or chat.")
+    parser.add_argument("--layers", nargs='+', help="Layers to save embeddings from.")
+    parser.add_argument("--datasets", nargs='+', help="Names of datasets, without .csv extension")
+    parser.add_argument("--output_dir", default="acts", help="Directory to save activations to.")
     parser.add_argument("--device", default="cpu")
-    args = parser.parse_args()
+    return parser
 
+def gen_acts(args, model, tokenizer, base_path=""):
+    """
+    The main logic. 'args' expects an object with attributes matching the parser arguments.
+    """
     datasets = args.datasets
+
+    # Dataset Expansion Logic
     if datasets == ["custom"]:
         datasets = ["real_examples"]
     if datasets == ["lie_statements"]:
-        #black_lies = ["colleagues", "police", "sales", "teachers"]
-        #black_lies = [os.path.join("lie_statements", "black_lies", name) for name in black_lies]
         white_lies = ["colleagues", "friendship", "parents", "teachers"]
         white_lies = [os.path.join("lie_statements", "white_lies", name) for name in white_lies]
-        datasets = white_lies
+        black_lies = ["colleagues", "police", "sales", "teachers"]
+        black_lies = [os.path.join("lie_statements", "black_lies", name) for name in black_lies]
+        datasets = white_lies + white_lies
     if datasets == ['b_w_lies']:
         datasets = ['b_w_lies/colleague', 'b_w_lies/friends', 'b_w_lies/lawyer', 'b_w_lies/police',
                     'b_w_lies/real_estate_agent', 'b_w_lies/soccer', 'b_w_lies/teacher']
@@ -124,18 +126,37 @@ if __name__ == "__main__":
             datasets.append(dataset_name)
 
     t.set_grad_enabled(False)
-    tokenizer, model = load_model(args.model_family, args.model_size, args.model_type, args.device)
+    
+    # print(f"Loading Model: {args.model_family} {args.model_size} ({args.model_type})...")
+    # tokenizer, model = load_model(args.model_family, args.model_size, args.model_type, args.device)
     
     for dataset in datasets:
-        statements = load_statements(dataset)
-        layers = [int(layer) for layer in args.layers]
-        if layers == [-1]:
-            layers = list(range(len(model.model.layers)))
+        statements = load_statements(dataset, base_path)
+        
+        # Handle Layer Logic
+        if args.layers is None:
+             # Default if not provided
+             layers = list(range(len(model.model.layers)))
+        else:
+            layers = [int(layer) for layer in args.layers]
+            if layers == [-1]:
+                layers = list(range(len(model.model.layers)))
+                
         save_dir = f"{args.output_dir}/{args.model_family}/{args.model_size}/{args.model_type}/{dataset}/"
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
 
+        # Batch Processing
         for idx in range(0, len(statements), 25):
             acts = get_acts(statements[idx:idx + 25], tokenizer, model, layers, args.device)
             for layer, act in acts.items():
                     t.save(act, f"{save_dir}/layer_{layer}_{idx}.pt")
+    
+    print("Done.")
+
+if __name__ == "__main__":
+    parser = get_parser()
+
+    args = parser.parse_args()
+    tokenizer, model = load_model("Llama3", "8B", "chat", "cuda")
+    gen_acts(args, model, tokenizer)
